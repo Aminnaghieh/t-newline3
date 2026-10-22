@@ -13,6 +13,7 @@ from liara_agent.cli.commands.debug_cmd import debug_app
 from liara_agent.cli.commands.deploy import deploy_app
 from liara_agent.cli.commands.init import init_app
 from liara_agent.cli.commands.logs import logs_app
+from liara_agent.cli.commands.mcp_cmd import mcp_app
 from liara_agent.cli.commands.monitor import monitor_app
 from liara_agent.cli.commands.service import service_app
 
@@ -42,6 +43,7 @@ app.add_typer(monitor_app, name="monitor")
 app.add_typer(debug_app, name="debug")
 app.add_typer(service_app, name="service")
 app.add_typer(logs_app, name="logs")
+app.add_typer(mcp_app, name="mcp")
 app.add_typer(config_app, name="config")
 
 
@@ -60,6 +62,6 @@ def main_callback(
         banner.append("🛡️  Liara SRE Agent ", style="bold cyan")
         banner.append(f"v{__version__}\n", style="bold green")
         banner.append("دستیار هوشمند مهندسی پایداری و استقرار بر روی Liara PaaS\n", style="white")
-        banner.append("دستورات اصلی: init | deploy | monitor | debug | service | logs | config", style="dim")
+        banner.append("دستورات اصلی: init | deploy | monitor | debug | service | logs | mcp | config", style="dim")
 
         console.print(Panel(banner, border_style="cyan", padding=(1, 2)))
