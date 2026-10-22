@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Optional
-
+import os
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -14,7 +14,8 @@ from liara_agent.cli.components.approval import request_approval
 from liara_agent.storage.credentials import default_credential_store
 from liara_agent.utils.config import get_settings
 from liara_agent.utils.constants import RiskLevel
-
+from dotenv import load_dotenv
+load_dotenv()
 service_app = typer.Typer(
     name="service",
     help="⚡ مدیریت عملیات زیرساخت، وضعیت، مقیاس‌پذیری و تنظیمات سرویس‌ها",
@@ -39,8 +40,11 @@ def list_projects() -> None:
     token = _get_client_and_token()
 
     async def _list() -> None:
-        async with LiaraClient(token=token) as client:
+        async with LiaraClient(token=token, team_id=os.getenv("LIARA_TEAM_ID")) as client:
+            print("DEBUG team_id:", client._team_id)
+            print("DEBUG token:", token[:20] if token else None)
             resp = await client.get_projects()
+            print("DEBUG resp:", resp)
             table = Table(title="📋 لیست اپلیکیشن‌های شما در لیارا", show_header=True, header_style="bold cyan")
             table.add_column("نام پروژه", style="bold")
             table.add_column("پلتفرم")

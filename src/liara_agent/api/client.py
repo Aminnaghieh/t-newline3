@@ -14,6 +14,7 @@ Usage::
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,10 @@ class LiaraClient:
         API base URL.  Defaults to ``https://api.liara.ir``.
     timeout:
         Default request timeout in seconds.
+    team_id:
+        Optional team identifier.  When set, a ``teamID`` query parameter
+        is attached to every request so that team-scoped projects are
+        visible.  Falls back to the ``LIARA_TEAM_ID`` environment variable.
     """
 
     def __init__(
@@ -78,6 +83,7 @@ class LiaraClient:
         token: str,
         base_url: str = LIARA_API_BASE_URL,
         timeout: float = 30.0,
+        team_id: str | None = None,
     ) -> None:
         if not token:
             raise AuthenticationError("API token must not be empty")
@@ -85,6 +91,7 @@ class LiaraClient:
         self._token = token
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._team_id = team_id or os.getenv("LIARA_TEAM_ID")
         self._client: httpx.AsyncClient | None = None
 
         # Simple sliding-window rate-limit tracking.
@@ -165,6 +172,7 @@ class LiaraClient:
 
         Handles:
         - Authorization header injection
+        - Team-scoped access via ``teamID`` query parameter
         - Client-side rate-limit enforcement
         - HTTP error → custom exception mapping
         - Retries with exponential back-off (via *tenacity*)
@@ -191,9 +199,15 @@ class LiaraClient:
 
         self._check_rate_limit(method)
 
+        # Merge caller-supplied params with the teamID scope parameter.
+        merged_params: dict[str, Any] = dict(params) if params else {}
+        if self._team_id:
+            merged_params["teamID"] = self._team_id
+
         req_kwargs: dict[str, Any] = {"method": method, "url": path}
-        if params:
-            req_kwargs["params"] = params
+        if merged_params:
+            req_kwargs["params"] = merged_params
+
         if files:
             # For multipart uploads, remove the JSON content-type.
             req_kwargs["files"] = files
@@ -255,14 +269,9 @@ class LiaraClient:
     # ═══════════════════════════════════════════════════════════
 
     async def get_projects(self) -> ProjectListResponse:
-        """List all projects owned by the authenticated user.
-
-        Returns
-        -------
-        ProjectListResponse
-            Wrapper containing ``projects: list[ProjectInfo]``.
-        """
-        data = await self._request("GET", ep.PROJECTS)
+        """List all projects owned by the authenticated user."""
+        params = {"teamID": self._team_id} if self._team_id else None
+        data = await self._request("GET", ep.PROJECTS, params=params)
         return ProjectListResponse.model_validate(data)
 
     async def get_project(self, name: str) -> ProjectDetailResponse:
@@ -663,3 +672,4 @@ class LiaraClient:
     async def get_billing(self) -> dict[str, Any]:
         """Get the current billing summary."""
         return await self._request("GET", ep.BILLING)
+    

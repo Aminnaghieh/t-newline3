@@ -62,6 +62,100 @@ class FixResult(BaseModel):
     verification_needed: bool = True
 
 
+def _normalize_ai_diagnosis(raw: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the LLM's JSON output to match the ``Diagnosis`` schema.
+
+    The model may return slightly different keys (e.g. ``summary`` instead of
+    ``root_cause_summary``, or omit ``title``/``explanation``/``impact`` inside
+    hypotheses).  This function maps common variants to the canonical schema so
+    that ``Diagnosis(**normalized)`` succeeds.
+    """
+    normalized: dict[str, Any] = {}
+
+    # ── root cause summary ──
+    normalized["root_cause_summary"] = str(
+        raw.get("root_cause_summary")
+        or raw.get("summary")
+        or raw.get("root_cause")
+        or raw.get("description")
+        or "علت اصلی توسط تحلیل هوش مصنوعی مشخص نشد."
+    )
+
+    # ── confidence ──
+    conf_raw = raw.get("confidence", raw.get("probability", 0.5))
+    try:
+        conf = float(conf_raw)
+        # If the model returned a percentage (e.g. 65), scale down.
+        if conf > 1.0:
+            conf = conf / 100.0
+    except (TypeError, ValueError):
+        conf = 0.5
+    normalized["confidence"] = max(0.0, min(1.0, conf))
+
+    # ── hypotheses ──
+    raw_hyps = raw.get("hypotheses") or raw.get("causes") or []
+    hypotheses: list[dict[str, Any]] = []
+    if isinstance(raw_hyps, list):
+        for idx, h in enumerate(raw_hyps, start=1):
+            if not isinstance(h, dict):
+                continue
+            title = str(
+                h.get("title")
+                or h.get("name")
+                or h.get("root_cause_summary")
+                or h.get("summary")
+                or f"فرضیه {idx}"
+            )
+            explanation = str(
+                h.get("explanation")
+                or h.get("description")
+                or h.get("details")
+                or h.get("summary")
+                or "توضیحاتی ارائه نشده است."
+            )
+            impact = str(
+                h.get("impact")
+                or h.get("effect")
+                or h.get("consequence")
+                or "اثر نامشخص"
+            )
+            prob_raw = h.get("probability", h.get("confidence", 0.5))
+            try:
+                prob = float(prob_raw)
+                if prob > 1.0:
+                    prob = prob / 100.0
+            except (TypeError, ValueError):
+                prob = 0.5
+            hypotheses.append({
+                "title": title,
+                "probability": max(0.0, min(1.0, prob)),
+                "category": str(h.get("category") or ErrorCategory.UNKNOWN),
+                "explanation": explanation,
+                "impact": impact,
+            })
+    normalized["hypotheses"] = hypotheses
+
+    # ── suggested remediations ──
+    raw_rems = raw.get("suggested_remediations") or raw.get("remediations") or []
+    remediations: list[dict[str, Any]] = []
+    if isinstance(raw_rems, list):
+        for idx, r in enumerate(raw_rems, start=1):
+            if not isinstance(r, dict):
+                continue
+            remediations.append({
+                "id": str(r.get("id") or f"fix_{idx}"),
+                "title": str(r.get("title") or r.get("name") or f"راهکار {idx}"),
+                "action_type": str(r.get("action_type") or r.get("action") or "restart"),
+                "description": str(r.get("description") or r.get("details") or ""),
+                "risk_level": str(r.get("risk_level") or RiskLevel.MEDIUM),
+                "auto_executable": bool(r.get("auto_executable", True)),
+                "parameters": r.get("parameters") or {},
+            })
+    normalized["suggested_remediations"] = remediations
+
+    return normalized
+
+
 class Debugger:
     """Collects runtime state, runs rule-based and AI-assisted RCA, and provides fixes."""
 
@@ -125,7 +219,8 @@ class Debugger:
             try:
                 ai_result = await self.ai.troubleshoot(context.model_dump())
                 if ai_result and isinstance(ai_result, dict):
-                    return Diagnosis(**ai_result)
+                    normalized = _normalize_ai_diagnosis(ai_result)
+                    return Diagnosis(**normalized)
             except Exception as e:
                 logger.warning("AI diagnosis fallback triggered: %s", e)
 

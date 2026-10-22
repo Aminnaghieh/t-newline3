@@ -136,7 +136,10 @@ def test_connections() -> None:
         else:
             try:
                 from openai import AsyncOpenAI
-                client = AsyncOpenAI(api_key=openai_key)
+                client = AsyncOpenAI(
+                    api_key=openai_key,
+                    base_url="https://ai.liara.ir/api/6ada21b27508e6ca2f0acf7f/v1",
+                )
                 models = await client.models.list()
                 console.print(f"  [green]✅ متصل به OpenAI ({len(models.data)} مدل در دسترس)[/green]")
             except Exception as e:
