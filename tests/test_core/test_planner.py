@@ -8,7 +8,7 @@ from liara_agent.core.planner import PlanRecommender
 def test_recommend_micro_for_small_project(sample_analysis: ProjectAnalysis):
     planner = PlanRecommender()
     rec = planner.recommend(sample_analysis)
-    assert rec.recommended_plan in ("micro", "small")
+    assert rec.recommended_plan in ("ir-small", "ir-medium")
     assert rec.reason != ""
 
 
@@ -24,12 +24,12 @@ def test_recommend_small_for_heavy_framework():
         has_dockerfile=False,
         has_tests=False,
         project_size_mb=25.0,
-        recommended_plan="small",
+        recommended_plan="ir-small",
         analysis_notes=[],
     )
     planner = PlanRecommender()
     rec = planner.recommend(analysis)
-    assert rec.recommended_plan in ("small", "medium")
+    assert rec.recommended_plan in ("ir-medium", "standard-base")
 
 
 def test_compare_plans():

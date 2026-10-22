@@ -285,7 +285,7 @@ class LiaraClient:
             Project creation payload.
         """
         return await self._request(
-            "POST", ep.PROJECTS, json=data.model_dump()
+            "POST", ep.PROJECTS, json=data.model_dump(exclude_none=True)
         )
 
     async def delete_project(self, name: str) -> dict[str, Any]:

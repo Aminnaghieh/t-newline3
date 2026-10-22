@@ -10,10 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field
 class ProjectCreate(BaseModel):
     """Request body for creating a new project."""
     name: str = Field(..., description="Project name (lowercase, alphanumeric, hyphens)")
-    planID: str = Field(default="micro", description="Plan ID")
+    planID: str = Field(default="ir-small", description="Plan ID")
     platform: str = Field(..., description="Platform type (nodejs, python, go, ...)")
     readOnlyRootFilesystem: bool = Field(default=False)
-    network: str = Field(default="default")
+    network: str | None = Field(default=None)
 
 
 class ProjectEnv(BaseModel):

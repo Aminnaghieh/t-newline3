@@ -14,7 +14,7 @@ class PlanRecommender:
 
     def recommend(self, analysis: ProjectAnalysis) -> PlanRecommendation:
         """Recommend a plan based on framework, size, and dependencies."""
-        rec_id = "micro"
+        rec_id = "ir-small"
         reasons: list[str] = []
         alternatives: list[str] = []
 
@@ -29,40 +29,39 @@ class PlanRecommender:
 
         # Heavy frameworks
         if framework in ("django", "next", "nuxt", "rails", "spring"):
-            rec_id = "small"
+            rec_id = "ir-medium"
             req_cpu = 1.0
             req_ram = 1.0
             reasons.append(f"فریم‌ورک '{framework}' نیاز به حداقل ۱ گیگابایت رم برای بیلد و رانتایم دارد")
         elif platform in ("dotnet", "java", "rust"):
-            rec_id = "small"
+            rec_id = "ir-medium"
             req_cpu = 1.0
             req_ram = 1.0
             reasons.append(f"پلتفرم '{platform}' برای فرآیند کامپایل به منابع بالاتری نیاز دارد")
 
         # Dependency scaling
         if dep_count > 40:
-            if rec_id == "micro":
-                rec_id = "small"
+            if rec_id == "ir-small":
+                rec_id = "ir-medium"
                 req_ram = 1.0
                 reasons.append(f"تعداد وابستگی‌ها بالاست ({dep_count} پکیج)")
-            elif rec_id == "small" and size_mb > 50:
-                rec_id = "medium"
-                req_cpu = 2.0
+            elif rec_id == "ir-medium" and size_mb > 50:
+                rec_id = "standard-base"
+                req_cpu = 1.0
                 req_ram = 2.0
-                reasons.append(f"حجم پروژه و پکیج‌ها فراتر از پلن Small است")
+                reasons.append(f"حجم پروژه و پکیج‌ها فراتر از پلن پایه است")
 
         if size_mb > 100:
-            rec_id = "medium"
-            req_cpu = 2.0
+            rec_id = "standard-base"
+            req_cpu = 1.0
             req_ram = 2.0
             reasons.append(f"حجم پروژه {size_mb:.1f}MB است و نیاز به دیسک و رم بیشتر دارد")
 
         if not reasons:
-            reasons.append("پروژه سبک و بهینه است؛ پلن Micro برای شروع کاملاً کافی و اقتصادی است")
+            reasons.append("پروژه سبک و بهینه است؛ پلن IR Small برای شروع کاملاً اقتصادی و کافی است")
 
-        # Determine alternatives
-        plan_order = ["micro", "small", "medium", "large", "xlarge", "xxlarge"]
-        cur_idx = plan_order.index(rec_id)
+        plan_order = ["ir-small", "ir-medium", "standard-base", "standard-plus", "pro", "pro-plus"]
+        cur_idx = plan_order.index(rec_id) if rec_id in plan_order else 0
         if cur_idx > 0:
             alternatives.append(plan_order[cur_idx - 1])
         if cur_idx < len(plan_order) - 1:

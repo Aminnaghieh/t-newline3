@@ -107,35 +107,51 @@ class ErrorCategory(StrEnum):
 
 # ─── Plan Catalog (local mapping) ────────────────────────────
 PLAN_CATALOG: dict[str, dict] = {
+    "ir-small": {
+        "cpu": 0.5, "ram_gb": 0.5, "disk_gb": 1.0,
+        "bandwidth_gb": 50, "label": "IR Small",
+        "description": "پلن اقتصادی دیتاسنتر ایران — مناسب تست و شروع",
+    },
+    "ir-medium": {
+        "cpu": 1.0, "ram_gb": 1.0, "disk_gb": 2.5,
+        "bandwidth_gb": 100, "label": "IR Medium",
+        "description": "پلن استاندارد دیتاسنتر ایران — مناسب استارتاپ‌ها",
+    },
+    "standard-base": {
+        "cpu": 1.0, "ram_gb": 2.0, "disk_gb": 5.0,
+        "bandwidth_gb": 200, "label": "Standard Base",
+        "description": "پلن استاندارد پایه با ۲ گیگ رم برای فریم‌ورک‌های سنگین‌تر",
+    },
+    "standard-plus": {
+        "cpu": 2.0, "ram_gb": 4.0, "disk_gb": 10.0,
+        "bandwidth_gb": 400, "label": "Standard Plus",
+        "description": "مناسب پروژه‌های با ترافیک متوسط و پروداکشن",
+    },
+    "pro": {
+        "cpu": 4.0, "ram_gb": 8.0, "disk_gb": 25.0,
+        "bandwidth_gb": 800, "label": "Pro",
+        "description": "پلن حرفه‌ای برای بارهای کاری سنگین",
+    },
+    "pro-plus": {
+        "cpu": 6.0, "ram_gb": 16.0, "disk_gb": 50.0,
+        "bandwidth_gb": 1500, "label": "Pro Plus",
+        "description": "بالاترین سطح سازمانی — پردازش‌های فشرده",
+    },
+    # Aliases for convenience
     "micro": {
-        "cpu": 0.5, "ram_gb": 0.5, "disk_gb": 0.5,
-        "bandwidth_gb": 30, "label": "Micro",
+        "cpu": 0.5, "ram_gb": 0.5, "disk_gb": 1.0,
+        "bandwidth_gb": 50, "label": "IR Small (Micro)",
         "description": "مناسب تست و پروژه‌های شخصی کوچک",
     },
     "small": {
-        "cpu": 1, "ram_gb": 1, "disk_gb": 2,
-        "bandwidth_gb": 100, "label": "Small",
+        "cpu": 1.0, "ram_gb": 1.0, "disk_gb": 2.5,
+        "bandwidth_gb": 100, "label": "IR Medium (Small)",
         "description": "مناسب پروژه‌های کوچک و استارتاپ‌ها",
     },
     "medium": {
-        "cpu": 2, "ram_gb": 2, "disk_gb": 5,
-        "bandwidth_gb": 200, "label": "Medium",
+        "cpu": 2.0, "ram_gb": 2.0, "disk_gb": 5.0,
+        "bandwidth_gb": 200, "label": "Standard Base (Medium)",
         "description": "مناسب پروژه‌های متوسط با ترافیک معقول",
-    },
-    "large": {
-        "cpu": 4, "ram_gb": 4, "disk_gb": 10,
-        "bandwidth_gb": 500, "label": "Large",
-        "description": "مناسب پروژه‌های بزرگ با ترافیک بالا",
-    },
-    "xlarge": {
-        "cpu": 6, "ram_gb": 8, "disk_gb": 20,
-        "bandwidth_gb": 1000, "label": "XLarge",
-        "description": "مناسب اپلیکیشن‌های سنگین و Enterprise",
-    },
-    "xxlarge": {
-        "cpu": 8, "ram_gb": 16, "disk_gb": 50,
-        "bandwidth_gb": 2000, "label": "XXLarge",
-        "description": "بالاترین سطح — بارهای بسیار سنگین",
     },
 }
 
