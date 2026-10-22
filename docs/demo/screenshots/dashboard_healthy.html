@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+.r1 {color: #3fb950; text-decoration-color: #3fb950}
+.r2 {color: #39bec1; text-decoration-color: #39bec1; font-weight: bold}
+.r3 {color: #3fb950; text-decoration-color: #3fb950; font-weight: bold; text-decoration: underline}
+.r4 {color: #6b7178; text-decoration-color: #6b7178}
+.r5 {color: #30363d; text-decoration-color: #30363d; background-color: #3fb950; font-weight: bold}
+.r6 {color: #30363d; text-decoration-color: #30363d; background-color: #388bf3; font-weight: bold}
+.r7 {color: #39bec1; text-decoration-color: #39bec1}
+.r8 {font-weight: bold}
+.r9 {color: #f85149; text-decoration-color: #f85149; font-weight: bold}
+.r10 {color: #d29922; text-decoration-color: #d29922}
+.r11 {color: #6b7178; text-decoration-color: #6b7178; font-style: italic}
+body {
+    color: #c9d1d9;
+    background-color: #0d1117;
+}
+</style>
+</head>
+<body>
+    <pre style="font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace"><code style="font-family:inherit"><span class="r1">┌────────────────────────────────────────────────────────────────────────────────────────── 🛡️ LIARA SRE AGENT─┐</span>
+<span class="r1">│</span> <span class="r2">🛡️ داشبورد پایش </span><span class="r3">shop-api</span><span class="r4">   </span><span class="r1">سلامت کلی: سالم</span>                                                                    <span class="r1">│</span>
+<span class="r1">│</span>                                                                                                              <span class="r1">│</span>
+<span class="r1">│</span> <span class="r5"> STATUS: RUNNING </span> <span class="r5"> DEPLOYED ✓ </span> <span class="r6"> PLAN: standard-plus </span> <span class="r6"> SCALE: 2 </span>                                              <span class="r1">│</span>
+<span class="r1">└────────────────────────────────────────── 2026-10-22 10:45:00 UTC ───────────────────────────────────────────┘</span>
+<span class="r7">┌───────────┬─────────────────┬────────────────────────────────────┬────────────────────────────┬──────────────┐</span>
+<span class="r7">│</span><span class="r2"> شاخص      </span><span class="r7">│</span><span class="r2">   مقدار فعلی    </span><span class="r7">│</span><span class="r2"> مقدار مصرف                         </span><span class="r7">│</span><span class="r2"> نمودار خام (24 نمونه اخیر) </span><span class="r7">│</span><span class="r2">     روند     </span><span class="r7">│</span>
+<span class="r7">├───────────┼─────────────────┼────────────────────────────────────┼────────────────────────────┼──────────────┤</span>
+<span class="r7">│</span><span class="r8"> 🖥️  CPU    </span><span class="r7">│</span> <span class="r1">     34.0%     </span> <span class="r7">│</span> <span class="r1">████████░░░░░░░░░░░░░░░░</span> <span class="r8">34.0%</span>     <span class="r7">│</span> <span class="r1">   ▁▂▁▂▂▂▂▂▂▂▂▃▂▃▃▃▃▃▃▃   </span> <span class="r7">│</span> <span class="r9">↑ در حال رشد</span> <span class="r7">│</span>
+<span class="r7">│</span><span class="r8"> 💾 RAM    </span><span class="r7">│</span> <span class="r1">     67.0%     </span> <span class="r7">│</span> <span class="r1">████████████████░░░░░░░░</span> <span class="r8">67.0%</span>     <span class="r7">│</span> <span class="r10">   ▃▃▄▄▄▄▄▄▅▅▅▅▅▅▅▅▆▆▆▆   </span> <span class="r7">│</span> <span class="r9">↑ در حال رشد</span> <span class="r7">│</span>
+<span class="r7">│</span><span class="r8"> 📥 NET ↓  </span><span class="r7">│</span> <span class="r7">    62.0 MB    </span> <span class="r7">│</span> <span class="r4">62.0 MB                           </span> <span class="r7">│</span> <span class="r9">        ▅▆▇▆▇▇████        </span> <span class="r7">│</span> <span class="r9">↑ در حال رشد</span> <span class="r7">│</span>
+<span class="r7">│</span><span class="r8"> 📤 NET ↑  </span><span class="r7">│</span> <span class="r7">    16.7 MB    </span> <span class="r7">│</span> <span class="r4">16.7 MB                           </span> <span class="r7">│</span> <span class="r9">        ▄▅▅▆▆▆▇▇██        </span> <span class="r7">│</span> <span class="r9">↑ در حال رشد</span> <span class="r7">│</span>
+<span class="r7">└───────────┴─────────────────┴────────────────────────────────────┴────────────────────────────┴──────────────┘</span>
+<span class="r4">                                           📊 آخرین نمونه‌های گزارش‌شده                                           </span>
+<span class="r1">┌────────── 🔔 هشدارها (0) ───────────┐</span> <span class="r1">┌────── 💡 پیشنهادات ───────┐</span>
+<span class="r1">│</span>                                     <span class="r1">│</span> <span class="r1">│</span>                           <span class="r1">│</span>
+<span class="r1">│</span> <span class="r1">✅ همه شاخص‌ها در محدوده نرمال هستند</span> <span class="r1">│</span> <span class="r1">│</span> <span class="r4">نیازی به اقدام فوری نیست.</span> <span class="r1">│</span>
+<span class="r1">│</span>                                     <span class="r1">│</span> <span class="r1">│</span>                           <span class="r1">│</span>
+<span class="r1">└─────────────────────────────────────┘</span> <span class="r1">└───────────────────────────┘</span>
+<span class="r4">آخرین بروزرسانی: 2026-10-22 10:45:00 UTC  •  </span><span class="r11">برای خروج Ctrl+C</span>
+</code></pre>
+</body>
+</html>

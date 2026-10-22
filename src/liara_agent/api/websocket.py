@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from types import TracebackType
-from typing import AsyncIterator, Self
+from typing import Self
 
 import websockets
 import websockets.asyncio.client as ws_client
@@ -65,6 +66,7 @@ class LiaraWebSocket:
         self._max_reconnect_attempts = max_reconnect_attempts
 
         self._connection: ClientConnection | None = None
+        self._stream: AsyncIterator[str] | None = None
         self._closed = False
 
     # ── Properties ───────────────────────────────────────────
@@ -131,7 +133,33 @@ class LiaraWebSocket:
     # ── Async Iterator ───────────────────────────────────────
 
     def __aiter__(self) -> AsyncIterator[str]:
-        return self._receive_loop()
+        """Return the idempotent receive loop for this instance.
+
+        Iterating twice (or from two ``async for`` statements) yields the
+        *same* stream instead of spawning competing receive loops.
+        """
+        if self._stream is None:
+            self._stream = self._receive_loop()
+        return self._stream
+
+    async def connect_and_stream(self) -> AsyncIterator[str]:
+        """Connect automatically and yield every incoming message.
+
+        The ergonomic entry point for live log tailing::
+
+            ws = LiaraWebSocket(token, project_id)
+            async for message in ws.connect_and_stream():
+                print(message)
+
+        The underlying stream auto-reconnects with backoff and stops after
+        ``max_reconnect_attempts`` consecutive failures. When iteration ends
+        the connection is closed.
+        """
+        try:
+            async for message in self:
+                yield message
+        finally:
+            await self.disconnect()
 
     async def _receive_loop(self) -> AsyncIterator[str]:
         """Yield messages from the WebSocket with automatic reconnection."""
@@ -145,8 +173,11 @@ class LiaraWebSocket:
                     attempts = 0
                     backoff = _INITIAL_BACKOFF
 
-                assert self._connection is not None  # noqa: S101
-                async for raw in self._connection:
+                connection = self._connection
+                if connection is None:  # pragma: no cover — connect() above guarantees
+                    logger.error("WS connection missing after connect(); retrying…")
+                    continue
+                async for raw in connection:
                     if isinstance(raw, bytes):
                         yield raw.decode("utf-8", errors="replace")
                     else:

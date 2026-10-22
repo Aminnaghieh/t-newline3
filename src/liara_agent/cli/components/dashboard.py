@@ -1,218 +1,361 @@
-"""Live metrics dashboard component using Rich Live display."""
+"""Beautiful live metrics dashboard for Liara projects, built on Rich.
+
+The dashboard consumes a :class:`~liara_agent.models.metrics.MonitorSnapshot`
+produced by :class:`~liara_agent.core.monitor.Monitor` and renders it as a
+composite of panels:
+
+1. Header — project identity + status chips (status/deployed/plan/scale).
+2. Metrics table — current value, progress bar, sparkline and trend arrow
+   for CPU, memory and network RX/TX.
+3. Alerts + Recommendations panels side by side.
+4. Footer with last-update timestamp.
+
+Both a static renderer (``show_dashboard``) and a live, auto-refreshing
+renderer (``show_live_dashboard``) are provided.
+"""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import time
+from collections.abc import Callable
 
-from rich.console import Console
-from rich.layout import Layout
+from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-console = Console()
+from liara_agent.models.metrics import MetricDataPoint, MonitorSnapshot
+
+# ─── Display thresholds ──────────────────────────────────────
+CPU_WARN = 70.0
+CPU_CRIT = 85.0
+MEM_WARN = 75.0
+MEM_CRIT = 90.0
+
+# ─── Visual constants ────────────────────────────────────────
+BAR_WIDTH = 24
+SPARK_POINTS = 24
+SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
+
+STATUS_COLORS = {
+    "running": "green",
+    "starting": "yellow",
+    "deploying": "yellow",
+    "stopped": "red",
+    "failed": "red",
+    "unknown": "dim",
+}
 
 
-def _color_for_value(value: float) -> str:
-    """Return a Rich color name based on percentage thresholds.
+def severity_for(value: float, warn: float, crit: float) -> str:
+    """Classify a percentage into ``"ok"`` / ``"warn"`` / ``"crit"``."""
+    if value >= crit:
+        return "crit"
+    if value >= warn:
+        return "warn"
+    return "ok"
 
-    - Green  : < 50%
-    - Yellow : 50–80%
-    - Red    : > 80%
+
+def color_for(value: float, warn: float, crit: float) -> str:
+    """Rich color name for a percentage value."""
+    return {"ok": "green", "warn": "yellow", "crit": "bold red"}[
+        severity_for(value, warn, crit)
+    ]
+
+
+def progress_bar(
+    percent: float,
+    width: int = BAR_WIDTH,
+    warn: float = 60.0,
+    crit: float = 85.0,
+) -> str:
+    """Colored text progress bar, clamped to ``0..100``."""
+    clamped = max(0.0, min(percent, 100.0))
+    filled = int(width * clamped / 100)
+    color = color_for(percent, warn, crit)
+    return (
+        f"[{color}]{'█' * filled}{'░' * (width - filled)}[/{color}]"
+        f" [bold]{clamped:.1f}%[/]"
+    )
+
+
+def sparkline(
+    series: list[MetricDataPoint],
+    width: int = SPARK_POINTS,
+    fixed_scale: float | None = None,
+) -> Text:
+    """Render the last ``width`` points of a series as a colored sparkline.
+
+    ``fixed_scale`` pins the vertical scale (e.g. ``100`` for percentages);
+    otherwise the series maximum is used.
     """
-    if value < 50.0:
-        return "green"
-    if value <= 80.0:
-        return "yellow"
-    return "red"
+    values = [p.value for p in series[-width:]]
+    if not values:
+        return Text("—", style="dim")
+
+    top = fixed_scale if fixed_scale is not None else max(values)
+    top = top if top > 0 else 1.0
+
+    chars = []
+    for v in values:
+        idx = int(len(SPARK_BLOCKS) * max(0.0, min(v, top)) / top)
+        chars.append(SPARK_BLOCKS[min(idx, len(SPARK_BLOCKS) - 1)])
+
+    last = values[-1]
+    style = color_for(100 * last / top if top else 0, 60.0, 85.0)
+    return Text("".join(chars), style=style)
 
 
-def _health_icon(value: float) -> str:
-    """Return a health indicator icon based on value."""
-    if value < 50.0:
-        return "🟢"
-    if value <= 80.0:
-        return "🟡"
-    return "🔴"
+def trend_arrow(series: list[MetricDataPoint], width: int = SPARK_POINTS) -> Text:
+    """Arrow + Persian label showing whether the recent trend goes up or down."""
+    values = [p.value for p in series[-width:]]
+    if len(values) < 2:
+        return Text("→", style="dim")
+    half = len(values) // 2
+    old = sum(values[:half]) / half
+    new = sum(values[half:]) / (len(values) - half)
+
+    if new > old * 1.1:
+        return Text("↑ در حال رشد", style="bold red")
+    if new < old * 0.9:
+        return Text("↓ در حال کاهش", style="green")
+    return Text("→ پایدار", style="dim")
 
 
-def _build_metrics_table(project_name: str, metrics: dict) -> Table:
-    """Build a Rich table from metrics data.
+def format_bytes(size: float) -> str:
+    """Format a byte count as a human-readable string."""
+    value = float(size)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(value) < 1024:
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} PB"
 
-    Expected metrics dict keys:
-        cpu_percent, memory_percent, memory_used_mb, memory_total_mb,
-        network_rx_bytes, network_tx_bytes, disk_used_mb, disk_total_mb
-    """
+
+def _chip(label: str, color: str) -> Text:
+    """A pill-like chip with inverted colors."""
+    return Text(f" {label} ", style=f"bold black on {color}")
+
+
+def _status_color(status: str) -> str:
+    return STATUS_COLORS.get(status.lower(), "magenta")
+
+
+def build_dashboard(snapshot: MonitorSnapshot) -> Group:
+    """Assemble the full dashboard renderable from a snapshot."""
+    header = _build_header(snapshot)
+    metrics = _build_metrics_table(snapshot)
+    footer = _build_footer(snapshot)
+
+    side = Table.grid(padding=(0, 1))
+    side.add_column(ratio=1)
+    side.add_column(ratio=1)
+    side.add_row(_build_alerts_panel(snapshot), _build_recommendations_panel(snapshot))
+
+    return Group(header, metrics, side, footer)
+
+
+def _build_header(snapshot: MonitorSnapshot) -> Panel:
+    """Header: identity line + status chips."""
+    status = (snapshot.status or "unknown").lower()
+    sc = _status_color(status)
+
+    identity = Text()
+    identity.append("🛡️ ", style="bold cyan")
+    identity.append("داشبورد پایش ", style="bold cyan")
+    identity.append(snapshot.project_name, style=f"bold {sc} underline")
+    identity.append("   ", style="dim")
+    identity.append(
+        "سلامت کلی: " + ("سالم" if snapshot.is_healthy else "ناسالم"),
+        style="green" if snapshot.is_healthy else "bold red",
+    )
+
+    chips = Table.grid(padding=(0, 1))
+    for _ in range(4):
+        chips.add_column()
+    chips.add_row(
+        _chip(f"STATUS: {status.upper()}", sc),
+        _chip(
+            "DEPLOYED ✓" if snapshot.is_deployed else "NOT DEPLOYED ✗",
+            "green" if snapshot.is_deployed else "red",
+        ),
+        _chip(f"PLAN: {snapshot.plan_id or '—'}", "blue"),
+        _chip(f"SCALE: {snapshot.scale or 0}", "blue"),
+    )
+
+    body = Group(identity, Text(), chips)
+    return Panel(
+        body,
+        border_style=sc,
+        padding=(0, 1),
+        title="🛡️ LIARA SRE AGENT",
+        title_align="right",
+        subtitle=snapshot.fetched_at or None,
+    )
+
+
+def _build_metrics_table(snapshot: MonitorSnapshot) -> Table:
+    """Metrics table: current value, progress bar, sparkline and trend."""
     table = Table(
-        title=f"📊 داشبورد متریک‌ها — {project_name}",
         show_header=True,
         header_style="bold cyan",
-        border_style="blue",
+        border_style="cyan",
+        expand=True,
         padding=(0, 1),
+        caption="📊 آخرین نمونه‌های گزارش‌شده",
+        caption_style="dim",
     )
-    table.add_column("متریک", style="bold", no_wrap=True, width=18)
-    table.add_column("مقدار", justify="center", width=15)
-    table.add_column("وضعیت", justify="center", width=8)
-    table.add_column("نوار", width=25)
+    table.add_column("شاخص", style="bold", no_wrap=True)
+    table.add_column("مقدار فعلی", justify="center", width=14)
+    table.add_column("مقدار مصرف", width=BAR_WIDTH + 10)
+    table.add_column(f"نمودار خام ({SPARK_POINTS} نمونه اخیر)", justify="center")
+    table.add_column("روند", justify="center", no_wrap=True)
 
-    # CPU
-    cpu = metrics.get("cpu_percent", 0.0)
-    cpu_color = _color_for_value(cpu)
-    cpu_bar = _progress_bar(cpu)
+    cpu = snapshot.cpu_percent
     table.add_row(
         "🖥️  CPU",
-        f"[{cpu_color}]{cpu:.1f}%[/{cpu_color}]",
-        _health_icon(cpu),
-        cpu_bar,
+        Text(f"{cpu:.1f}%", style=color_for(cpu, CPU_WARN, CPU_CRIT)),
+        progress_bar(cpu, warn=CPU_WARN, crit=CPU_CRIT),
+        sparkline(snapshot.cpu_series, fixed_scale=100.0),
+        trend_arrow(snapshot.cpu_series),
     )
 
-    # Memory
-    mem = metrics.get("memory_percent", 0.0)
-    mem_used = metrics.get("memory_used_mb", 0)
-    mem_total = metrics.get("memory_total_mb", 0)
-    mem_color = _color_for_value(mem)
-    mem_bar = _progress_bar(mem)
+    mem = snapshot.memory_percent
     table.add_row(
-        "💾 حافظه",
-        f"[{mem_color}]{mem:.1f}%[/{mem_color}] ({mem_used}/{mem_total} MB)",
-        _health_icon(mem),
-        mem_bar,
+        "💾 RAM",
+        Text(f"{mem:.1f}%", style=color_for(mem, MEM_WARN, MEM_CRIT)),
+        progress_bar(mem, warn=MEM_WARN, crit=MEM_CRIT),
+        sparkline(snapshot.memory_series, fixed_scale=100.0),
+        trend_arrow(snapshot.memory_series),
     )
 
-    # Network
-    net_rx = metrics.get("network_rx_bytes", 0)
-    net_tx = metrics.get("network_tx_bytes", 0)
+    net_rx = snapshot.net_rx_series
+    rx_last = net_rx[-1].value if net_rx else 0.0
     table.add_row(
-        "🌐 شبکه (دریافت)",
-        _format_bytes(net_rx),
-        "📥",
-        "",
-    )
-    table.add_row(
-        "🌐 شبکه (ارسال)",
-        _format_bytes(net_tx),
-        "📤",
-        "",
+        "📥 NET ↓",
+        Text(format_bytes(rx_last), style="cyan"),
+        Text(format_bytes(rx_last), style="dim"),
+        sparkline(net_rx),
+        trend_arrow(net_rx),
     )
 
-    # Disk
-    disk_used = metrics.get("disk_used_mb", 0)
-    disk_total = metrics.get("disk_total_mb", 1)
-    disk_pct = (disk_used / disk_total * 100) if disk_total else 0.0
-    disk_color = _color_for_value(disk_pct)
-    disk_bar = _progress_bar(disk_pct)
+    net_tx = snapshot.net_tx_series
+    tx_last = net_tx[-1].value if net_tx else 0.0
     table.add_row(
-        "💿 دیسک",
-        f"[{disk_color}]{disk_pct:.1f}%[/{disk_color}] ({disk_used}/{disk_total} MB)",
-        _health_icon(disk_pct),
-        disk_bar,
+        "📤 NET ↑",
+        Text(format_bytes(tx_last), style="cyan"),
+        Text(format_bytes(tx_last), style="dim"),
+        sparkline(net_tx),
+        trend_arrow(net_tx),
     )
 
     return table
 
 
-def _progress_bar(percent: float, width: int = 20) -> str:
-    """Create a text-based progress bar."""
-    filled = int(width * min(percent, 100) / 100)
-    empty = width - filled
-    color = _color_for_value(percent)
-    return f"[{color}]{'█' * filled}{'░' * empty}[/{color}]"
+def _build_alerts_panel(snapshot: MonitorSnapshot) -> Panel:
+    """Alerts panel: triggered alerts + collected issues."""
+    lines: list[Text] = []
 
+    for alert in snapshot.alerts:
+        style = "bold red" if alert.severity == "critical" else "yellow"
+        icon = "🚨" if alert.severity == "critical" else "⚠️"
+        lines.append(Text(f"{icon} [{alert.severity}] {alert.message}", style=style))
 
-def _format_bytes(size: int | float) -> str:
-    """Format byte count to human-readable string."""
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if abs(size) < 1024:
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} PB"
+    for issue in snapshot.issues:
+        lines.append(Text(f"❗ {issue}", style="yellow"))
 
+    has_critical = any(a.severity == "critical" for a in snapshot.alerts)
+    has_warn = bool(snapshot.alerts) or bool(snapshot.issues)
 
-def _build_alerts_panel(metrics: dict) -> Panel:
-    """Build an alerts panel highlighting problematic metrics."""
-    alerts: list[str] = []
-
-    cpu = metrics.get("cpu_percent", 0.0)
-    mem = metrics.get("memory_percent", 0.0)
-    disk_used = metrics.get("disk_used_mb", 0)
-    disk_total = metrics.get("disk_total_mb", 1)
-    disk_pct = (disk_used / disk_total * 100) if disk_total else 0.0
-
-    if cpu > 80:
-        alerts.append(f"[red]⚠️  CPU بالا: {cpu:.1f}% — بررسی مصرف پردازنده[/red]")
-    elif cpu > 50:
-        alerts.append(f"[yellow]📌 CPU متوسط: {cpu:.1f}%[/yellow]")
-
-    if mem > 80:
-        alerts.append(f"[red]⚠️  حافظه بالا: {mem:.1f}% — خطر OOM[/red]")
-    elif mem > 50:
-        alerts.append(f"[yellow]📌 حافظه متوسط: {mem:.1f}%[/yellow]")
-
-    if disk_pct > 80:
-        alerts.append(f"[red]⚠️  دیسک پر: {disk_pct:.1f}% — فضای دیسک رو به اتمام[/red]")
-
-    if not alerts:
-        alerts.append("[green]✅ همه متریک‌ها در محدوده نرمال[/green]")
+    if not lines:
+        lines.append(Text("✅ همه شاخص‌ها در محدوده نرمال هستند", style="green"))
 
     return Panel(
-        "\n".join(alerts),
-        title="🔔 هشدارها",
-        border_style="yellow" if any("⚠️" in a for a in alerts) else "green",
-        padding=(1, 2),
+        Group(*lines),
+        title=f"🔔 هشدارها ({len(snapshot.alerts) + len(snapshot.issues)})",
+        border_style="bold red" if has_critical else ("yellow" if has_warn else "green"),
+        padding=(1, 1),
     )
 
 
-def show_dashboard(project_name: str, metrics: dict) -> None:
-    """Display a static metrics dashboard for a project.
+def _build_recommendations_panel(snapshot: MonitorSnapshot) -> Panel:
+    """Recommendations panel with actionable hints."""
+    if snapshot.recommendations:
+        content: Text | Group = Group(
+            *(Text(f"💡 {r}", style="cyan") for r in snapshot.recommendations)
+        )
+        title = f"💡 پیشنهادات ({len(snapshot.recommendations)})"
+        border = "cyan"
+    elif snapshot.is_healthy:
+        content = Text("نیازی به اقدام فوری نیست.", style="dim")
+        title, border = "💡 پیشنهادات", "green"
+    else:
+        content = Text("داده کافی برای پیشنهاد موجود نیست.", style="dim")
+        title, border = "💡 پیشنهادات", "dim"
 
-    Args:
-        project_name: The Liara project name.
-        metrics: Dict with metric values (cpu_percent, memory_percent, etc.).
-    """
-    now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return Panel(content, title=title, border_style=border, padding=(1, 1))
 
-    metrics_table = _build_metrics_table(project_name, metrics)
-    alerts_panel = _build_alerts_panel(metrics)
 
-    console.print()
-    console.print(metrics_table)
-    console.print(alerts_panel)
-    console.print(f"[dim]آخرین بروزرسانی: {now}[/dim]\n")
+def _build_footer(snapshot: MonitorSnapshot) -> Text:
+    """Footer hint line."""
+    footer = Text()
+    footer.append("آخرین بروزرسانی: ", style="dim")
+    footer.append(snapshot.fetched_at or "—", style="dim")
+    footer.append("  •  ", style="dim")
+    footer.append("برای خروج Ctrl+C", style="dim italic")
+    return footer
+
+
+# ══════════════════════════════════════════════════════════════
+#  Public render API
+# ══════════════════════════════════════════════════════════════
+
+def show_dashboard(snapshot: MonitorSnapshot, console: Console | None = None) -> None:
+    """Print a static snapshot of the dashboard."""
+    out = console or Console()
+    out.print()
+    out.print(build_dashboard(snapshot))
 
 
 def show_live_dashboard(
     project_name: str,
-    fetch_metrics_fn,
+    fetch_snapshot_fn: Callable[[], MonitorSnapshot],
     refresh_interval: int = 10,
+    console: Console | None = None,
 ) -> None:
-    """Display a live auto-refreshing metrics dashboard.
+    """Auto-refreshing live dashboard.
 
     Args:
-        project_name: The Liara project name.
-        fetch_metrics_fn: Callable that returns a metrics dict.
+        project_name: Display name of the project.
+        fetch_snapshot_fn: Synchronous callable returning a fresh
+            :class:`MonitorSnapshot`. Failures are rendered as an error
+            panel and the loop keeps running.
         refresh_interval: Seconds between refreshes.
+        console: Optional console (useful for tests/capture).
     """
-    import time
-
-    def _generate_display() -> Table:
-        metrics = fetch_metrics_fn()
-        return _build_metrics_table(project_name, metrics)
-
-    console.print(
-        f"[bold cyan]📊 داشبورد زنده — {project_name}[/bold cyan]"
+    out = console or Console()
+    out.print()
+    out.print(
+        f"[bold cyan]📊 پایش زنده [bold yellow]{project_name}[/] "
+        f"• بروزرسانی هر {refresh_interval} ثانیه • برای خروج Ctrl+C[/]\n"
     )
-    console.print(
-        f"[dim]بروزرسانی هر {refresh_interval} ثانیه | Ctrl+C برای خروج[/dim]\n"
-    )
+
+    def _error_panel(exc: Exception) -> Panel:
+        return Panel(
+            Text(f"خطا در دریافت متریک‌ها: {exc}", style="bold red"),
+            title="⚠️ ارتباط با لیارا",
+            border_style="red",
+        )
 
     try:
-        with Live(_generate_display(), console=console, refresh_per_second=1) as live:
+        with Live(console=out, refresh_per_second=1) as live:
             while True:
+                try:
+                    snapshot = fetch_snapshot_fn()
+                    live.update(build_dashboard(snapshot))
+                except Exception as exc:  # noqa: BLE001 — never kill the live loop
+                    live.update(_error_panel(exc))
                 time.sleep(refresh_interval)
-                metrics = fetch_metrics_fn()
-                table = _build_metrics_table(project_name, metrics)
-                alerts = _build_alerts_panel(metrics)
-                live.update(table)
     except KeyboardInterrupt:
-        console.print("\n[yellow]داشبورد متوقف شد.[/yellow]")
+        out.print("\n[yellow]داشبورد زنده متوقف شد. موفق باشید! 👋[/yellow]")

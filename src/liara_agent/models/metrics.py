@@ -50,6 +50,29 @@ class HealthStatus(BaseModel):
     recommendations: list[str] = Field(default_factory=list)
 
 
+class MonitorSnapshot(BaseModel):
+    """Complete, normalized monitoring snapshot for a single project.
+
+    Built by ``Monitor.get_snapshot`` and consumed by the dashboard component.
+    """
+    project_name: str
+    status: str = "unknown"
+    is_deployed: bool = False
+    is_healthy: bool = False
+    plan_id: str = ""
+    scale: int = 0
+    cpu_percent: float = 0.0
+    memory_percent: float = 0.0
+    cpu_series: list[MetricDataPoint] = Field(default_factory=list)
+    memory_series: list[MetricDataPoint] = Field(default_factory=list)
+    net_rx_series: list[MetricDataPoint] = Field(default_factory=list)
+    net_tx_series: list[MetricDataPoint] = Field(default_factory=list)
+    alerts: list[AlertEvent] = Field(default_factory=list)
+    issues: list[str] = Field(default_factory=list)
+    recommendations: list[str] = Field(default_factory=list)
+    fetched_at: str = ""
+
+
 class AlertRule(BaseModel):
     """Alert rule configuration."""
     name: str
