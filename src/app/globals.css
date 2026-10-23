@@ -1,0 +1,307 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-app);
+  --font-mono: var(--font-mono-app);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-mint: var(--mint);
+  --color-sky: var(--sky);
+  --color-amber-brand: var(--amber-brand);
+  --color-danger-brand: var(--danger-brand);
+}
+
+/* ─── Liara brand palette (extracted from liara.ir) ─────────── */
+:root {
+  --radius: 0.75rem;
+  --mint: #87fcc4;
+  --sky: #28c1f5;
+  --amber-brand: #ffc000;
+  --danger-brand: #ff6b6b;
+
+  --background: #161b18;
+  --foreground: #eef3ef;
+  --card: #1d231f;
+  --card-foreground: #eef3ef;
+  --popover: #202723;
+  --popover-foreground: #eef3ef;
+  --primary: #87fcc4;
+  --primary-foreground: #0e1512;
+  --secondary: #26302a;
+  --secondary-foreground: #d0e0ef;
+  --muted: #232b26;
+  --muted-foreground: #93a29a;
+  --accent: #26302a;
+  --accent-foreground: #87fcc4;
+  --destructive: #ff6b6b;
+  --border: rgba(255, 255, 255, 0.08);
+  --input: rgba(255, 255, 255, 0.1);
+  --ring: #87fcc4;
+  --chart-1: #87fcc4;
+  --chart-2: #28c1f5;
+  --chart-3: #ffc000;
+  --chart-4: #00ebc9;
+  --chart-5: #ff6b6b;
+  --sidebar: #191f1b;
+  --sidebar-foreground: #eef3ef;
+  --sidebar-primary: #87fcc4;
+  --sidebar-primary-foreground: #0e1512;
+  --sidebar-accent: #26302a;
+  --sidebar-accent-foreground: #87fcc4;
+  --sidebar-border: rgba(255, 255, 255, 0.07);
+  --sidebar-ring: #87fcc4;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-app), Tahoma, Arial, sans-serif;
+    background-image:
+      radial-gradient(1100px 480px at 88% -10%, rgba(135, 252, 196, 0.055), transparent 60%),
+      radial-gradient(900px 420px at -10% 110%, rgba(40, 193, 245, 0.05), transparent 60%);
+    background-attachment: fixed;
+  }
+  ::selection {
+    background: rgba(135, 252, 196, 0.25);
+  }
+}
+
+/* ─── Brand utilities ───────────────────────────────────────── */
+.liara-gradient {
+  background-image: linear-gradient(92deg, #87fcc4, #28c1f5 98.77%);
+}
+.liara-gradient-text {
+  background-image: linear-gradient(92deg, #87fcc4, #28c1f5 98.77%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.brand-ring {
+  box-shadow: 0 0 0 1px rgba(135, 252, 196, 0.25), 0 8px 32px -12px rgba(135, 252, 196, 0.14);
+}
+
+/* Scrollbars — Liara-style thin */
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.13);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(135, 252, 196, 0.35);
+  background-clip: content-box;
+  border: 2px solid transparent;
+}
+
+/* Persian-friendly numerals inside code/latin runs */
+.latin-digits {
+  font-variant-numeric: tabular-nums;
+  direction: ltr;
+  unicode-bidi: embed;
+}
+
+/* Chat markdown */
+.chat-md {
+  line-height: 1.9;
+  word-break: break-word;
+}
+.chat-md h2,
+.chat-md h3 {
+  font-weight: 800;
+  margin: 0.85em 0 0.35em;
+  color: var(--mint);
+}
+.chat-md h2 {
+  font-size: 1.05rem;
+}
+.chat-md h3 {
+  font-size: 0.98rem;
+}
+.chat-md p {
+  margin: 0.45em 0;
+}
+.chat-md ul,
+.chat-md ol {
+  margin: 0.45em 0;
+  padding-inline-start: 1.3em;
+}
+.chat-md ul {
+  list-style: disc;
+}
+.chat-md ol {
+  list-style: decimal;
+}
+.chat-md li {
+  margin: 0.25em 0;
+}
+.chat-md strong {
+  color: var(--mint);
+  font-weight: 700;
+}
+.chat-md code {
+  background: rgba(135, 252, 196, 0.1);
+  border: 1px solid rgba(135, 252, 196, 0.18);
+  padding: 0.06em 0.4em;
+  border-radius: 6px;
+  font-size: 0.85em;
+  font-family: var(--font-mono-app), monospace;
+  direction: ltr;
+  unicode-bidi: embed;
+  display: inline-block;
+  max-width: 100%;
+  overflow-x: auto;
+  vertical-align: middle;
+}
+.chat-md pre {
+  background: #101512;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  padding: 0.9em 1em;
+  overflow-x: auto;
+  margin: 0.6em 0;
+  direction: ltr;
+  text-align: left;
+}
+.chat-md pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 0.82em;
+}
+.chat-md table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.7em 0;
+  font-size: 0.88em;
+}
+.chat-md th,
+.chat-md td {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0.4em 0.65em;
+  text-align: right;
+}
+.chat-md th {
+  background: rgba(135, 252, 196, 0.08);
+  color: var(--mint);
+}
+.chat-md a {
+  color: var(--sky);
+  text-decoration: underline;
+}
+.chat-md blockquote {
+  border-inline-start: 3px solid rgba(135, 252, 196, 0.5);
+  padding-inline-start: 0.9em;
+  margin: 0.6em 0;
+  color: var(--muted-foreground);
+}
+
+/* Terminal log viewer */
+.terminal {
+  background: #0e1310;
+  font-family: var(--font-mono-app), monospace;
+  font-size: 12.5px;
+  line-height: 1.75;
+  direction: ltr;
+  text-align: left;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.pulse-dot {
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+
+@keyframes blink-caret {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+.type-caret::after {
+  content: "▍";
+  color: var(--mint);
+  animation: blink-caret 1s step-end infinite;
+  margin-inline-start: 2px;
+}
+
+/* thinking dots */
+@keyframes dot-bounce {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  40% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+.thinking-dot {
+  animation: dot-bounce 1.2s infinite ease-in-out;
+}
+.thinking-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.thinking-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
