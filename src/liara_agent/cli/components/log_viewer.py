@@ -1,16 +1,16 @@
-"""Log viewer component with syntax highlighting and filtering."""
+"""Log viewer component with syntax highlighting, level filtering, and legend."""
 
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-console = Console()
+from liara_agent.cli.theme import BOX, console, escape_markup
 
 # Log level color mapping
 LEVEL_STYLES: dict[str, str] = {
@@ -33,6 +33,17 @@ LEVEL_ICONS: dict[str, str] = {
     "critical": "💀",
 }
 
+# Numeric severity used for --level filtering (>= shown).
+LEVEL_ORDER: dict[str, int] = {
+    "debug": 10,
+    "info": 20,
+    "warn": 30,
+    "warning": 30,
+    "error": 40,
+    "fatal": 50,
+    "critical": 50,
+}
+
 
 def _format_log_timestamp(ts: str | None) -> Text:
     """Format a log timestamp with dim styling."""
@@ -42,7 +53,7 @@ def _format_log_timestamp(ts: str | None) -> Text:
         if isinstance(ts, str):
             dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
         else:
-            dt = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+            dt = datetime.fromtimestamp(float(ts), tz=UTC)
         formatted = dt.strftime("%H:%M:%S.%f")[:-3]
     except (ValueError, TypeError):
         formatted = str(ts)
@@ -93,6 +104,7 @@ def render_logs(
     logs: list[dict],
     grep: str | None = None,
     project_name: str = "",
+    min_level: str | None = None,
 ) -> None:
     """Render a list of log entries with syntax highlighting.
 
@@ -100,20 +112,34 @@ def render_logs(
         logs: List of log entry dicts with keys: timestamp, message, level, source.
         grep: Optional pattern to filter and highlight in log messages.
         project_name: Optional project name for the panel title.
+        min_level: Optional minimum severity (debug < info < warn < error < fatal).
     """
-    # Filter by grep pattern if provided
+    filtered = logs
+
+    # Severity filter
+    if min_level:
+        floor = LEVEL_ORDER.get(min_level.lower())
+        if floor is None:
+            console.print(
+                f"[yellow]سطح لاگ نامعتبر: '{min_level}' — معتبرها: debug/info/warn/error/fatal[/yellow]"
+            )
+            return
+        filtered = [
+            log for log in filtered
+            if LEVEL_ORDER.get(str(log.get("level", "info")).lower(), 20) >= floor
+        ]
+
+    # Grep filter
     if grep:
         filtered = [
-            log for log in logs
+            log for log in filtered
             if re.search(re.escape(grep), log.get("message", ""), re.IGNORECASE)
         ]
-    else:
-        filtered = logs
 
     if not filtered:
         if grep:
             console.print(
-                f"[yellow]هیچ لاگی با الگوی '{grep}' یافت نشد.[/yellow]"
+                f"[yellow]هیچ لاگی با الگوی '{escape_markup(grep)}' یافت نشد.[/yellow]"
             )
         else:
             console.print("[yellow]هیچ لاگی موجود نیست.[/yellow]")
@@ -137,18 +163,39 @@ def render_logs(
         msg = _highlight_message(entry.get("message", ""), grep=grep)
         table.add_row(ts, level, msg)
 
-    title = f"📋 لاگ‌ها — {project_name}" if project_name else "📋 لاگ‌ها"
+    proj_escaped = escape_markup(project_name) if project_name else ""
+    title = f"📋 لاگ‌ها — {proj_escaped}" if project_name else "📋 لاگ‌ها"
     if grep:
-        title += f" (فیلتر: {grep})"
+        title += f" (فیلتر: {escape_markup(grep)})"
+    if min_level:
+        title += f" (سطح ≥ {min_level.upper()})"
 
     panel = Panel(
         table,
         title=title,
         border_style="blue",
+        box=BOX,
         padding=(0, 0),
     )
     console.print(panel)
-    console.print(f"[dim]تعداد: {len(filtered)} / {len(logs)} لاگ[/dim]\n")
+
+    # Summary + severity legend
+    counts: dict[str, int] = {}
+    for entry in filtered:
+        lvl = str(entry.get("level", "info")).lower()
+        counts[lvl] = counts.get(lvl, 0) + 1
+    legend = Text("تعداد: ", style="dim")
+    legend.append(f"{len(filtered)}", style="bold white")
+    legend.append(f" / {len(logs)} لاگ", style="dim")
+    if counts:
+        legend.append("   •   ", style="dim")
+        parts = []
+        for lvl in ("error", "warn", "info", "debug"):
+            if counts.get(lvl):
+                parts.append(f"{LEVEL_ICONS.get(lvl, '')} {lvl}: {counts[lvl]}")
+        legend.append("  ".join(parts), style="dim")
+    console.print(legend)
+    console.print()
 
 
 def render_single_log(entry: dict, grep: str | None = None) -> None:

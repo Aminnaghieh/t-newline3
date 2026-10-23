@@ -8,19 +8,12 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from liara_agent.ai.prompts.advisor import (
-    DEPLOYMENT_ADVISOR_PROMPT,
-    OPTIMIZATION_PROMPT,
-    SCALING_ADVISOR_PROMPT,
-)
 from liara_agent.ai.prompts.analyzer import (
     PLAN_RECOMMENDATION_PROMPT,
     PROJECT_ANALYSIS_PROMPT,
 )
 from liara_agent.ai.prompts.debugger import (
     RCA_SYSTEM_PROMPT,
-    REMEDIATION_PROMPT,
-    VERIFICATION_PROMPT,
 )
 from liara_agent.ai.tools import LIARA_TOOLS
 
@@ -74,12 +67,20 @@ Rules:
 class AIEngine:
     """Async AI Engine wrapping OpenAI for SRE analysis and decision-making."""
 
-    def __init__(self, api_key: str, model: str = "openai/gpt-4o-mini") -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "openai/gpt-4o-mini",
+        base_url: str | None = None,
+    ) -> None:
+        from liara_agent.utils.constants import DEFAULT_AI_BASE_URL
+
         self.api_key = api_key
         self.model = model
         self.client = AsyncOpenAI(
             api_key=api_key,
-            base_url="https://ai.liara.ir/api/6ada21b27508e6ca2f0acf7f/v1",
+            # The gateway is configurable (env/settings) — never hardcoded.
+            base_url=base_url or DEFAULT_AI_BASE_URL,
         ) if api_key else None
 
     async def analyze_project(self, project_info: dict[str, Any]) -> dict[str, Any]:

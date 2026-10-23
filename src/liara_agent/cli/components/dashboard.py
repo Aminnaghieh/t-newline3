@@ -19,6 +19,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 
+from rich import box
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
@@ -323,8 +324,16 @@ def show_live_dashboard(
     fetch_snapshot_fn: Callable[[], MonitorSnapshot],
     refresh_interval: int = 10,
     console: Console | None = None,
+    offline_fn: Callable[[], bool] | None = None,
 ) -> None:
-    """Auto-refreshing live dashboard.
+    """Auto-refreshing live dashboard (v2).
+
+    Improvements over v1:
+    - fetching runs in a worker thread so the loop never blocks the UI;
+    - a thin "در حال بروزرسانی…" status line shows while new data loads;
+    - the age of the displayed data is shown in the footer;
+    - an offline badge appears when the last fetch was served from cache;
+    - overflow is truncated gracefully on short terminals.
 
     Args:
         project_name: Display name of the project.
@@ -333,29 +342,73 @@ def show_live_dashboard(
             panel and the loop keeps running.
         refresh_interval: Seconds between refreshes.
         console: Optional console (useful for tests/capture).
+        offline_fn: Optional callable reporting whether the last fetch was
+            served from the offline cache.
     """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from rich.markup import escape
+
     out = console or Console()
     out.print()
     out.print(
-        f"[bold cyan]📊 پایش زنده [bold yellow]{project_name}[/] "
+        f"[bold cyan]📊 پایش زنده [bold yellow]{escape(project_name)}[/] "
         f"• بروزرسانی هر {refresh_interval} ثانیه • برای خروج Ctrl+C[/]\n"
     )
 
     def _error_panel(exc: Exception) -> Panel:
         return Panel(
-            Text(f"خطا در دریافت متریک‌ها: {exc}", style="bold red"),
+            Text(f"خطا در دریافت متریک‌ها: {escape(str(exc))}", style="bold red"),
             title="⚠️ ارتباط با لیارا",
             border_style="red",
         )
 
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="liara-dash")
     try:
-        with Live(console=out, refresh_per_second=1) as live:
+        future = executor.submit(fetch_snapshot_fn)
+        latest: object | None = None
+        last_ok = time.monotonic()
+
+        with Live(console=out, refresh_per_second=2, vertical_overflow="ellipsis") as live:
             while True:
-                try:
-                    snapshot = fetch_snapshot_fn()
-                    live.update(build_dashboard(snapshot))
-                except Exception as exc:  # noqa: BLE001 — never kill the live loop
-                    live.update(_error_panel(exc))
+                if future.done():
+                    try:
+                        latest = future.result()
+                        last_ok = time.monotonic()
+                    except Exception as exc:  # noqa: BLE001 — never kill the loop
+                        latest = _error_panel(exc)
+                    # Schedule the next refresh immediately.
+                    future = executor.submit(fetch_snapshot_fn)
+                else:
+                    time.sleep(0.2)
+                    continue
+
+                # Compose: optional offline badge + dashboard + fetching note.
+                parts = []
+                if offline_fn and offline_fn():
+                    parts.append(
+                        Panel(
+                            Text(
+                                "⚠️ حالت آفلاین — داده‌ها از آخرین کش محلی نمایش داده می‌شوند",
+                                style="bold yellow",
+                            ),
+                            border_style="yellow",
+                            box=box.ROUNDED,
+                            padding=(0, 1),
+                        )
+                    )
+                if latest is not None:
+                    parts.append(latest)
+                age = int(time.monotonic() - last_ok)
+                parts.append(
+                    Text(
+                        f"⏳ در حال بروزرسانی…  •  سن داده: {age} ثانیه  •  خروج: Ctrl+C",
+                        style="dim",
+                    )
+                )
+                live.update(Group(*parts))
                 time.sleep(refresh_interval)
     except KeyboardInterrupt:
         out.print("\n[yellow]داشبورد زنده متوقف شد. موفق باشید! 👋[/yellow]")
+    finally:
+        executor.shutdown(wait=False)

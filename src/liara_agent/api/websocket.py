@@ -73,13 +73,14 @@ class LiaraWebSocket:
 
     @property
     def uri(self) -> str:
-        """Fully-qualified WebSocket URI."""
-        return (
-            f"{self._base_url}"
-            f"?token={self._token}"
-            f"&cmd=/bin/bash"
-            f"&project_id={self._project_id}"
-        )
+        """Fully-qualified WebSocket URI (token-free).
+
+        Security: the bearer token is *never* placed in the URL — URLs are
+        logged by proxies, servers and crash reporters. Authentication is
+        carried exclusively by the ``Authorization`` header set in
+        :meth:`connect`.
+        """
+        return f"{self._base_url}?cmd=/bin/bash&project_id={self._project_id}"
 
     @property
     def is_connected(self) -> bool:
@@ -100,7 +101,9 @@ class LiaraWebSocket:
         self._closed = False
         self._connection = await ws_client.connect(
             self.uri,
-            additional_headers={"Authorization": f"Bearer {self._token}"},
+            additional_headers={
+                "Authorization": f"Bearer {self._token}",
+            },
         )
         logger.info("WS connected to project %s", self._project_id)
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from rich.panel import Panel
 from rich.table import Table
@@ -16,7 +16,7 @@ def format_timestamp(ts: str | int | float | None) -> str:
     if ts is None:
         return "—"
     if isinstance(ts, (int, float)):
-        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        dt = datetime.fromtimestamp(ts, tz=UTC)
     else:
         dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     return dt.strftime("%Y-%m-%d %H:%M:%S")

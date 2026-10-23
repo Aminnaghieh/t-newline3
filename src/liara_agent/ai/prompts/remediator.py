@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 AUTO_FIX_PROMPT = """\
 You are an **automated remediation engine** for the **Liara PaaS** platform.
 

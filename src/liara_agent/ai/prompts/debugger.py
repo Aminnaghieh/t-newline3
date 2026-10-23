@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 RCA_SYSTEM_PROMPT = """\
 You are an expert **Site Reliability Engineer (SRE)** specializing in root cause analysis \
 on the **Liara PaaS** platform.

@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from liara_agent.api.client import LiaraClient
 from liara_agent.utils.constants import ErrorCategory, RiskLevel
+from liara_agent.utils.redaction import redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -45,17 +46,20 @@ class Remediation(BaseModel):
     risk_level: RiskLevel = RiskLevel.MEDIUM
     auto_executable: bool = True
     parameters: dict[str, Any] = Field(default_factory=dict)
+    project_name: str = ""
 
     def compute_hash(self) -> str:
-        """Deterministic SHA-256 of this remediation's payload.
+        """Deterministic SHA-256 of this remediation's full payload.
 
         Used by the HITL approval gate: the hash shown to the user must
         match the hash of the action that is actually executed, so a
-        tampered or stale approval cannot be replayed.
+        tampered or stale approval cannot be replayed.  The hash binds the
+        action to the target project too — the same action against a
+        different project produces a different hash.
         """
         payload = (
-            f"{self.id}|{self.action_type}|"
-            f"{sorted(self.parameters.items())}"
+            f"{self.id}|{self.action_type}|{self.project_name}|"
+            f"{self.title}|{sorted(self.parameters.items())}"
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
@@ -162,10 +166,11 @@ def _normalize_ai_diagnosis(raw: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def _attach_approval(diag: Diagnosis) -> Diagnosis:
-    """Attach a hash + 15-minute expiry to the first remediation."""
+def _attach_approval(diag: Diagnosis, project_name: str = "") -> Diagnosis:
+    """Attach a project-bound hash + 15-minute expiry to the first remediation."""
     if diag.suggested_remediations:
         primary = diag.suggested_remediations[0]
+        primary.project_name = project_name
         diag.approval_hash = primary.compute_hash()
         diag.approval_expires_at = time.time() + 15 * 60
     return diag
@@ -219,21 +224,27 @@ class Debugger:
             status=status,
             platform=platform,
             plan_id=plan_id,
-            recent_logs=logs_list,
-            recent_events=events_list,
+            recent_logs=[redact_secrets(log_line) for log_line in logs_list],
+            recent_events=[redact_secrets(e) for e in events_list],
             metrics_snapshot={},
             has_env_vars=has_envs,
         )
 
     async def diagnose(self, context: DebugContext) -> Diagnosis:
-        """Run diagnosis — uses AI Engine if available, with robust heuristic fallback."""
+        """Run diagnosis — uses AI Engine if available, with robust heuristic fallback.
+
+        The context sent to the LLM is redacted first: runtime logs often
+        contain DB URLs, tokens and headers that must not leave the machine.
+        """
         if self.ai:
             try:
-                ai_result = await self.ai.troubleshoot(context.model_dump())
+                from liara_agent.utils.redaction import redact_mapping
+
+                ai_result = await self.ai.troubleshoot(redact_mapping(context.model_dump()))
                 if ai_result and isinstance(ai_result, dict):
                     normalized = _normalize_ai_diagnosis(ai_result)
                     diag = Diagnosis(**normalized)
-                    return _attach_approval(diag)
+                    return _attach_approval(diag, context.project_name)
             except Exception as e:
                 logger.warning("AI diagnosis fallback triggered: %s", e)
 
@@ -329,7 +340,7 @@ class Debugger:
             hypotheses=hypotheses,
             suggested_remediations=remediations,
         )
-        return _attach_approval(diag)
+        return _attach_approval(diag, context.project_name)
 
     async def execute_fix(self, project_name: str, remediation: Remediation) -> FixResult:
         """Execute the chosen remediation action."""

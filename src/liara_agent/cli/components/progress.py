@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import time
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator
 
-from rich.console import Console
 from rich.progress import (
     BarColumn,
     Progress,
@@ -17,7 +15,7 @@ from rich.progress import (
 )
 from rich.status import Status
 
-console = Console()
+from liara_agent.cli.theme import console
 
 # Deploy stages with labels (Persian)
 DEPLOY_STAGES: list[tuple[str, str]] = [
@@ -34,11 +32,11 @@ def deploy_progress() -> Progress:
 
     Usage:
         with deploy_progress() as progress:
-            task = progress.add_task("دیپلوی", total=len(DEPLOY_STAGES))
-            for stage_id, stage_label in DEPLOY_STAGES:
-                progress.update(task, description=stage_label)
-                # ... perform stage work ...
-                progress.advance(task)
+            task = progress.add_task("دیپلوی", total=1.0)
+            def cb(msg, p):
+                progress.update(task, description=msg, completed=p)
+            # ... perform stage work ...
+            progress.update(task, completed=1.0)
 
     Returns:
         A configured Rich Progress instance.
@@ -46,7 +44,7 @@ def deploy_progress() -> Progress:
     return Progress(
         SpinnerColumn(),
         TextColumn("[bold blue]{task.description}"),
-        BarColumn(bar_width=40),
+        BarColumn(bar_width=40, complete_style="green", finished_style="bold green"),
         TaskProgressColumn(),
         TimeElapsedColumn(),
         console=console,

@@ -3,17 +3,25 @@
 Enables any AI agent (Claude Desktop, Cursor, Antigravity, Windsurf, LangChain, etc.)
 to manage, deploy, monitor, and troubleshoot Liara PaaS applications directly using
 the user's own credentials and credits.
+
+Security model
+--------------
+- Read-only tools run freely.
+- Write/destructive tools (restart, scale, resize, deploy) are **gated** behind
+  the ``LIARA_MCP_ALLOW_WRITES`` environment flag (default: disabled) and are
+  always written to the tamper-evident audit trail.
+- Local-path tools refuse paths outside an allowed workspace root, so a
+  compromised/prompt-injected MCP client cannot exfiltrate arbitrary
+  directories (e.g. ``~/.ssh``) as a "deployment".
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
@@ -24,6 +32,7 @@ from liara_agent.core.deployer import Deployer
 from liara_agent.core.monitor import Monitor
 from liara_agent.core.planner import PlanRecommender
 from liara_agent.models.plans import get_plan_by_id
+from liara_agent.storage.audit import audit
 from liara_agent.storage.credentials import default_credential_store
 from liara_agent.utils.config import get_settings
 
@@ -31,6 +40,59 @@ logger = logging.getLogger("liara-mcp")
 
 # Initialize MCP Server
 mcp_server = MCPServer("liara-sre-agent")
+
+# Directories that must never be packaged or analyzed via MCP.
+_SENSITIVE_DIR_NAMES = {".ssh", "aws", ".aws", ".gnupg", ".kube", ".docker", ".config", ".env"}
+
+
+def _writes_allowed() -> bool:
+    """Whether destructive MCP tools may run (opt-in via env flag)."""
+    return os.environ.get("LIARA_MCP_ALLOW_WRITES", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _writes_blocked_response(action: str, project_name: str) -> str:
+    audit(action=f"mcp.{action}", target=project_name, status="blocked_writes_disabled")
+    return json.dumps(
+        {
+            "error": "عملیات نوشتاری در MCP غیرفعال است",
+            "hint": (
+                "برای فعال‌سازی، متغیر محیطی LIARA_MCP_ALLOW_WRITES=1 را در "
+                "پیکربندی کلاینت MCP خود تنظیم کنید. این گیت از اجرای ناخواسته "
+                "عملیات مخرب توسط ایجنت‌های AI جلوگیری می‌کند."
+            ),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _validate_workspace_path(raw_path: str) -> Path:
+    """Containment check for local paths passed over MCP.
+
+    Allowed: the current working directory subtree or, when set, the
+    ``LIARA_MCP_WORKSPACE_ROOT`` subtree.  Sensitive dot-directories (``.ssh``,
+    ``.aws``, …) are always refused.
+    """
+    path = Path(raw_path).expanduser().resolve()
+
+    if path == Path.home():
+        raise ValueError("تحلیل کل پوشه خانه مجاز نیست — مسیر پروژه را مشخص کنید")
+
+    for part in path.parts:
+        if part.lower() in _SENSITIVE_DIR_NAMES:
+            raise ValueError(f"مسیر شامل پوشه حساس '{part}' است و مجاز نیست")
+
+    allowed_roots = [Path.cwd().resolve()]
+    workspace_root = os.environ.get("LIARA_MCP_WORKSPACE_ROOT")
+    if workspace_root:
+        allowed_roots.append(Path(workspace_root).expanduser().resolve())
+
+    if not any(str(path).startswith(str(root)) for root in allowed_roots):
+        raise ValueError(
+            "مسیر خارج از فضای کاری مجاز است. مسیر باید داخل پوشه جاری یا "
+            "LIARA_MCP_WORKSPACE_ROOT باشد."
+        )
+    return path
 
 
 def _get_token() -> str:
@@ -142,8 +204,12 @@ async def liara_get_logs(project_name: str, since_minutes: int = 30, grep: str =
     description="Analyze a local directory to detect language, framework, port, start command, and recommend a Liara plan.",
 )
 async def liara_analyze_local_project(project_path: str) -> str:
-    """Analyze local codebase."""
-    path = Path(project_path)
+    """Analyze local codebase (workspace-contained)."""
+    try:
+        path = _validate_workspace_path(project_path)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
     if not path.is_dir():
         return json.dumps({"error": f"Path '{project_path}' is not a valid directory"})
 
@@ -166,15 +232,22 @@ async def liara_analyze_local_project(project_path: str) -> str:
 
 @mcp_server.tool(
     name="liara_deploy_project",
-    description="Package local source code as tar.gz and deploy/release to a Liara project.",
+    description="Package local source code as tar.gz and deploy/release to a Liara project (requires LIARA_MCP_ALLOW_WRITES=1).",
 )
 async def liara_deploy_project(
     project_name: str,
     source_path: str,
     port: int | None = None,
 ) -> str:
-    """Deploy source code."""
-    path = Path(source_path)
+    """Deploy source code (gated + workspace-contained)."""
+    if not _writes_allowed():
+        return _writes_blocked_response("deploy", project_name)
+
+    try:
+        path = _validate_workspace_path(source_path)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
     if not path.is_dir():
         return json.dumps({"error": f"Path '{source_path}' is not a valid directory"})
 
@@ -189,18 +262,28 @@ async def liara_deploy_project(
             port=port or analysis.port,
             platform_type=analysis.platform,
         )
+        audit(
+            action="mcp.deploy",
+            target=project_name,
+            risk_level="medium",
+            status="success" if result.success else "error",
+            details={"release_id": result.release_id},
+        )
         return json.dumps(result.model_dump(), ensure_ascii=False, indent=2)
 
 
 @mcp_server.tool(
     name="liara_restart_app",
-    description="Restart application pods/containers on Liara.",
+    description="Restart application pods/containers on Liara (requires LIARA_MCP_ALLOW_WRITES=1).",
 )
 async def liara_restart_app(project_name: str) -> str:
-    """Restart app."""
+    """Restart app (gated + audited)."""
+    if not _writes_allowed():
+        return _writes_blocked_response("restart", project_name)
     token = _get_token()
     async with LiaraClient(token=token) as client:
         await client.restart_project(project_name)
+        audit(action="mcp.restart", target=project_name, risk_level="medium", status="success")
         return json.dumps(
             {"status": "success", "message": f"App '{project_name}' restarted successfully"},
             ensure_ascii=False,
@@ -209,13 +292,16 @@ async def liara_restart_app(project_name: str) -> str:
 
 @mcp_server.tool(
     name="liara_scale_app",
-    description="Turn an app on (scale=1) or off (scale=0) on Liara.",
+    description="Turn an app on (scale=1) or off (scale=0) on Liara (requires LIARA_MCP_ALLOW_WRITES=1).",
 )
 async def liara_scale_app(project_name: str, scale: int) -> str:
-    """Scale app on/off."""
+    """Scale app on/off (gated + audited)."""
+    if not _writes_allowed():
+        return _writes_blocked_response("scale", project_name)
     token = _get_token()
     async with LiaraClient(token=token) as client:
         await client.scale_project(project_name, scale)
+        audit(action="mcp.scale", target=project_name, risk_level="high", status="success", details={"scale": scale})
         return json.dumps(
             {"status": "success", "message": f"App '{project_name}' scale set to {scale}"},
             ensure_ascii=False,
@@ -224,13 +310,16 @@ async def liara_scale_app(project_name: str, scale: int) -> str:
 
 @mcp_server.tool(
     name="liara_resize_plan",
-    description="Upgrade or downgrade hardware plan (micro, small, medium, large, xlarge, xxlarge) of a Liara app.",
+    description="Upgrade or downgrade hardware plan (micro, small, medium, large, xlarge, xxlarge) of a Liara app (requires LIARA_MCP_ALLOW_WRITES=1).",
 )
 async def liara_resize_plan(project_name: str, plan_id: str) -> str:
-    """Change hardware plan."""
+    """Change hardware plan (gated + audited)."""
+    if not _writes_allowed():
+        return _writes_blocked_response("resize", project_name)
     token = _get_token()
     async with LiaraClient(token=token) as client:
         await client.change_plan(project_name, plan_id)
+        audit(action="mcp.resize", target=project_name, risk_level="high", status="success", details={"plan": plan_id})
         return json.dumps(
             {"status": "success", "message": f"App '{project_name}' plan changed to {plan_id}"},
             ensure_ascii=False,

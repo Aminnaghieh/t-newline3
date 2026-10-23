@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import sys
+
 import typer
-from rich.console import Console
-from rich.panel import Panel
-from rich.text import Text
 
 from liara_agent import __version__
 from liara_agent.cli.commands.config import config_app
@@ -16,9 +15,7 @@ from liara_agent.cli.commands.logs import logs_app
 from liara_agent.cli.commands.mcp_cmd import mcp_app
 from liara_agent.cli.commands.monitor import monitor_app
 from liara_agent.cli.commands.service import service_app
-
-import sys
-import os
+from liara_agent.cli.theme import console, render_banner
 
 if sys.platform == "win32":
     try:
@@ -26,8 +23,6 @@ if sys.platform == "win32":
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-
-console = Console(legacy_windows=False)
 
 app = typer.Typer(
     name="liara-agent",
@@ -51,17 +46,29 @@ app.add_typer(config_app, name="config")
 def main_callback(
     ctx: typer.Context,
     version: bool = typer.Option(False, "--version", "-v", help="نمایش نسخه برنامه"),
+    no_color: bool = typer.Option(False, "--no-color", help="غیرفعال‌سازی رنگ‌ها (مناسب لاگ و CI)"),
 ) -> None:
     """Liara SRE Agent — دستیار هوشمند استقرار، مانیتورینگ و عیب‌یابی خودکار."""
+    if no_color:
+        from liara_agent.cli.theme import set_no_color
+
+        set_no_color()
+
     if version:
-        console.print(f"[bold cyan]Liara SRE Agent[/bold cyan] version [bold green]{__version__}[/bold green]")
+        console.print(
+            f"[bold cyan]Liara SRE Agent[/bold cyan] version [bold green]{__version__}[/bold green]"
+        )
         raise typer.Exit(0)
 
     if ctx.invoked_subcommand is None:
-        banner = Text()
-        banner.append("🛡️  Liara SRE Agent ", style="bold cyan")
-        banner.append(f"v{__version__}\n", style="bold green")
-        banner.append("دستیار هوشمند مهندسی پایداری و استقرار بر روی Liara PaaS\n", style="white")
-        banner.append("دستورات اصلی: init | deploy | monitor | debug | service | logs | mcp | config", style="dim")
+        render_banner(console)
 
-        console.print(Panel(banner, border_style="cyan", padding=(1, 2)))
+        # First-run onboarding: point the user at token setup when unset.
+        try:
+            from liara_agent.cli.theme import onboarding_hint
+            from liara_agent.storage.credentials import resolve_liara_token
+
+            if not resolve_liara_token():
+                onboarding_hint(console)
+        except Exception:
+            pass

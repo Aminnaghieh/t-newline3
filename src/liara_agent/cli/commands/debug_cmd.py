@@ -6,16 +6,20 @@ import asyncio
 import time
 
 import typer
-from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
 from liara_agent.ai.engine import AIEngine
 from liara_agent.api.client import LiaraClient
-from liara_agent.core.debugger import Debugger, Remediation
+from liara_agent.cli.commands.common import require_token
+from liara_agent.cli.components.approval import request_approval
+from liara_agent.cli.components.progress import operation_spinner
+from liara_agent.cli.theme import BOX, console, print_next_steps, render_error
+from liara_agent.core.debugger import Debugger
+from liara_agent.storage.audit import audit
 from liara_agent.utils.config import get_settings
-
-console = Console()
+from liara_agent.utils.errors import LiaraAgentError
 
 debug_app = typer.Typer(
     name="debug",
@@ -33,16 +37,14 @@ def run_debug(
 ) -> None:
     """اجرای کامل چرخه عیب‌یابی: جمع‌آوری کانتکست، RCA، پیشنهاد راه‌حل و اجرای اصلاح."""
     settings = get_settings()
-    token = settings.liara_api_token
-    if not token:
-        console.print("[red]❌ توکن API لیارا تنظیم نشده است.[/red]")
-        raise typer.Exit(code=1)
+    token = require_token()
 
     ai_engine = None
     if settings.openai_api_key:
         ai_engine = AIEngine(
             api_key=settings.openai_api_key,
             model=settings.openai_model,
+            base_url=settings.openai_base_url,
         )
 
     async def _run() -> None:
@@ -50,26 +52,28 @@ def run_debug(
             dbg = Debugger(api_client=client, ai_engine=ai_engine)
 
             console.print(
-                Panel.fit(
-                    f"[bold]پروژه هدف:[/bold] {project}\n"
+                Panel(
+                    f"[bold]پروژه هدف:[/bold] {escape(project)}\n"
                     f"[bold]موتور هوش مصنوعی:[/bold] "
-                    f"{'فعال (' + settings.openai_model + ')' if ai_engine else 'غیرفعال (rule-based)'}",
+                    f"{'فعال (' + escape(settings.openai_model) + ')' if ai_engine else 'غیرفعال (rule-based)'}",
                     title="🚨 شروع عملیات عیب‌یابی و ممیزی SRE",
                     border_style="red",
+                    box=BOX,
                 )
             )
 
-            with console.status("[cyan]در حال واکشی آخرین لاگ‌ها، رویدادها و وضعیت سیستم...[/cyan]"):
+            with operation_spinner("در حال واکشی آخرین لاگ‌ها، رویدادها و وضعیت سیستم..."):
                 context = await dbg.collect_context(project)
 
             # --- Offline indicator ---
             if client.is_offline:
                 console.print(
-                    Panel.fit(
+                    Panel(
                         "⚠️ [bold yellow]حالت آفلاین[/bold yellow]\n"
                         "ارتباط با Liara API برقرار نشد. داده‌ها از آخرین کش محلی نمایش داده می‌شوند "
                         "و ممکن است قدیمی باشند. برای بررسی مجدد، بعداً دوباره تلاش کنید.",
                         border_style="yellow",
+                        box=BOX,
                     )
                 )
 
@@ -78,7 +82,7 @@ def run_debug(
                 f"{len(context.recent_events)} رویداد جمع‌آوری شد."
             )
 
-            with console.status("[cyan]در حال تحلیل ریشه‌ای دلایل بروز اختلال (RCA)...[/cyan]"):
+            with operation_spinner("در حال تحلیل ریشه‌ای دلایل بروز اختلال (RCA)..."):
                 diagnosis = await dbg.diagnose(context)
 
             if diagnosis.hypotheses:
@@ -86,6 +90,7 @@ def run_debug(
                     title="📋 فرضیات و علل احتمالی اختلال (Prioritized Hypotheses)",
                     show_header=True,
                     header_style="bold magenta",
+                    box=BOX,
                 )
                 table.add_column("اولویت", justify="center")
                 table.add_column("عنوان علت ریشه‌ای")
@@ -95,19 +100,20 @@ def run_debug(
                 for i, h in enumerate(diagnosis.hypotheses, start=1):
                     table.add_row(
                         f"#{i}",
-                        h.title,
+                        escape(h.title),
                         f"{h.probability * 100:.0f}%",
-                        str(h.category),
-                        h.impact,
+                        escape(str(h.category)),
+                        escape(h.impact),
                     )
                 console.print(table)
 
             console.print(
-                Panel.fit(
-                    f"[bold]علت اصلی:[/bold] {diagnosis.root_cause_summary}\n"
+                Panel(
+                    f"[bold]علت اصلی:[/bold] {escape(diagnosis.root_cause_summary)}\n"
                     f"[bold]درجه اطمینان تشخیصی:[/bold] {diagnosis.confidence * 100:.0f}%",
                     title="🧠 نتیجه‌گیری موتور عیب‌یابی (RCA Summary)",
                     border_style="blue",
+                    box=BOX,
                 )
             )
 
@@ -115,18 +121,11 @@ def run_debug(
                 console.print("[green]هیچ اقدام اصلاحی فوری مورد نیاز نیست.[/green]")
                 return
 
-            if diagnosis.approval_hash:
-                remaining = int(diagnosis.approval_expires_at - time.time())
-                console.print(
-                    f"\n🔐 [bold]کد تأیید عملیات:[/bold] [yellow]{diagnosis.approval_hash}[/yellow]"
-                    f"  [dim](اعتبار: {max(remaining, 0)} ثانیه)[/dim]"
-                )
-
             console.print("\n[bold]🛠️ راهکارهای پیشنهادی جهت رفع مشکل:[/bold]")
             for i, r in enumerate(diagnosis.suggested_remediations, start=1):
                 console.print(
-                    f"  {i}. [cyan]{r.title}[/cyan] — {r.description} "
-                    f"[dim](ریسک: {r.risk_level})[/dim]"
+                    f"  {i}. [cyan]{escape(r.title)}[/cyan] — {escape(r.description)} "
+                    f"[dim](ریسک: {escape(str(r.risk_level))})[/dim]"
                 )
 
             if not auto_fix:
@@ -135,7 +134,7 @@ def run_debug(
                 )
                 return
 
-            first: Remediation = diagnosis.suggested_remediations[0]
+            first = diagnosis.suggested_remediations[0]
 
             if (
                 diagnosis.approval_expires_at
@@ -146,59 +145,90 @@ def run_debug(
                 )
                 return
 
-            answer = typer.prompt(
-                f"\nآیا مایل به اجرای راهکار اول ({first.title}) هستید؟ [y/n]",
-                default="y",
+            # ── Unified Security Gateway ─────────────────────────
+            approved = request_approval(
+                operation=f"اجرای راهکار اصلاحی: {first.title}",
+                details={
+                    "پروژه": project,
+                    "نوع اقدام": first.action_type,
+                    "توضیح": first.description or "—",
+                    "پارامترها": str(first.parameters),
+                },
+                risk_level=first.risk_level,
+                approval_hash=diagnosis.approval_hash or None,
             )
-            if answer.strip().lower() not in {"y", "yes"}:
-                console.print("[yellow]عملیات لغو شد.[/yellow]")
+            audit(
+                action="debug.approval",
+                target=project,
+                risk_level=str(first.risk_level),
+                status="approved" if approved else "denied",
+                details={"action_type": first.action_type, "hash": diagnosis.approval_hash},
+            )
+            if not approved:
+                console.print("[yellow]عملیات لغو شد — هیچ تغییری اعمال نشد.[/yellow]")
                 return
 
+            # Tamper-evidence: hash must still match the executed action.
             current_hash = first.compute_hash()
             if diagnosis.approval_hash and current_hash != diagnosis.approval_hash:
+                audit(
+                    action="debug.approval_mismatch",
+                    target=project,
+                    risk_level=str(first.risk_level),
+                    status="refused",
+                )
                 console.print(
-                    "[red]❌ کد تأیید با عملیات مطابقت ندارد (احتمال دستکاری).[/red]"
+                    "[red]❌ کد تأیید با عملیات مطابقت ندارد (احتمال دستکاری). عملیات متوقف شد.[/red]"
                 )
                 return
 
-            if str(first.risk_level).lower() in {"high", "critical"}:
-                confirm = typer.prompt(
-                    f"⚠️ عملیات پرریسک است. برای ادامه عبارت «{first.title}» را تایپ کنید",
-                    default="",
-                )
-                if confirm.strip() != first.title:
-                    console.print("[yellow]عملیات لغو شد.[/yellow]")
-                    return
-
             console.print(
-                Panel.fit(
-                    f"پروژه: {project}\n"
-                    f"نوع اقدام: {first.action_type}\n"
-                    f"پارامترها: {first.parameters}",
-                    title=f"⚡ اجرای راهکار اصلاحی: {first.title}",
+                Panel(
+                    f"پروژه: {escape(project)}\n"
+                    f"نوع اقدام: {escape(first.action_type)}\n"
+                    f"پارامترها: {escape(str(first.parameters))}",
+                    title=f"⚡ اجرای راهکار اصلاحی: {escape(first.title)}",
                     border_style="yellow",
+                    box=BOX,
                 )
             )
 
-            with console.status("[cyan]در حال اجرای دستور اصلاحی در پلتفرم لیارا...[/cyan]"):
+            with operation_spinner("در حال اجرای دستور اصلاحی در پلتفرم لیارا..."):
                 result = await dbg.execute_fix(project, first)
 
+            audit(
+                action=f"debug.fix.{first.action_type}",
+                target=project,
+                risk_level=str(first.risk_level),
+                status="success" if result.success else "error",
+                details={"message": result.message[:200]},
+            )
+
             if result.success:
-                console.print(f"[green]✅ {result.message}[/green]")
+                console.print(f"[green]✅ {escape(result.message)}[/green]")
             else:
-                console.print(f"[red]❌ {result.message}[/red]")
+                console.print(f"[red]❌ {escape(result.message)}[/red]")
                 return
 
             console.print("\n[cyan]🔄 در حال راستی‌آزمایی وضعیت پس از رفع مشکل...[/cyan]")
             await asyncio.sleep(5)
             post = await dbg.collect_context(project)
             console.print(
-                Panel.fit(
-                    f"وضعیت کنونی برنامه: [bold]{post.status}[/bold]\n"
+                Panel(
+                    f"وضعیت کنونی برنامه: [bold]{escape(post.status)}[/bold]\n"
                     f"{'پروژه با موفقیت به چرخه عملیاتی بازگشت.' if post.status == 'ACTIVE' else 'نیاز به بررسی دستی.'}",
                     title="🎉 پایان چرخه عیب‌یابی و تایید سلامت",
                     border_style="green",
+                    box=BOX,
                 )
             )
+            print_next_steps([
+                (f"liara-agent monitor {project} --live", "پایش زنده پس از رفع مشکل"),
+                (f"liara-agent logs {project} --level error", "بررسی لاگ‌های خطا"),
+            ])
 
-    asyncio.run(_run())
+    try:
+        asyncio.run(_run())
+    except LiaraAgentError as exc:
+        render_error(exc)
+        raise typer.Exit(1) from exc

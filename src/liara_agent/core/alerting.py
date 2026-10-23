@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 from liara_agent.models.metrics import AlertEvent, AlertRule
 
@@ -57,7 +56,7 @@ class AlertEngine:
     def check(self, current_metrics: dict[str, float]) -> list[AlertEvent]:
         """Check metrics map against configured rules."""
         events: list[AlertEvent] = []
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        now_str = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
         for rule in self.rules:
             if rule.metric not in current_metrics:
@@ -66,13 +65,7 @@ class AlertEngine:
             val = current_metrics[rule.metric]
             triggered = False
 
-            if rule.operator == ">" and val > rule.threshold:
-                triggered = True
-            elif rule.operator == ">=" and val >= rule.threshold:
-                triggered = True
-            elif rule.operator == "<" and val < rule.threshold:
-                triggered = True
-            elif rule.operator == "<=" and val <= rule.threshold:
+            if rule.operator == ">" and val > rule.threshold or rule.operator == ">=" and val >= rule.threshold or rule.operator == "<" and val < rule.threshold or rule.operator == "<=" and val <= rule.threshold:
                 triggered = True
 
             if triggered:

@@ -5,8 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from liara_agent.core.analyzer import ProjectAnalysis
-from liara_agent.models.plans import PlanInfo, PlanRecommendation, get_all_plans, get_plan_by_id
-from liara_agent.utils.constants import PLAN_CATALOG
+from liara_agent.models.plans import PlanInfo, PlanRecommendation, get_plan_by_id
 
 
 class PlanRecommender:
@@ -49,7 +48,7 @@ class PlanRecommender:
                 rec_id = "standard-base"
                 req_cpu = 1.0
                 req_ram = 2.0
-                reasons.append(f"حجم پروژه و پکیج‌ها فراتر از پلن پایه است")
+                reasons.append("حجم پروژه و پکیج‌ها فراتر از پلن پایه است")
 
         if size_mb > 100:
             rec_id = "standard-base"

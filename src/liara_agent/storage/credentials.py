@@ -26,6 +26,33 @@ logger = logging.getLogger(__name__)
 SERVICE_NAME = "liara-agent"
 
 
+def is_placeholder(value: str | None) -> bool:
+    """True when a token is empty or an obvious placeholder value."""
+    if not value:
+        return True
+    stripped = value.strip().lower()
+    return (
+        stripped.endswith("xxxx")
+        or stripped in {"changeme", "placeholder", "your-token-here"}
+    )
+
+
+def resolve_liara_token() -> str | None:
+    """Single source of truth for token resolution.
+
+    Lookup order: process env → OS keyring → private ``.env`` → settings.
+    Returns ``None`` when no usable token is configured.
+    """
+    from liara_agent.utils.config import get_settings
+
+    token = default_credential_store.get_token("LIARA_API_TOKEN")
+    if token and not is_placeholder(token):
+        return token
+    settings = get_settings()
+    token = settings.liara_api_token
+    return token if token and not is_placeholder(token) else None
+
+
 class CredentialStore:
     """Manages secure storage of API tokens and keys."""
 
@@ -121,11 +148,21 @@ class CredentialStore:
         return str(val) if val else None
 
     def _update_env_file(self, key: str, value: str) -> None:
-        """Upsert ``KEY=value`` in the ``.env`` file (preserving other keys)."""
+        """Upsert ``KEY=value`` in the ``.env`` file (preserving other keys).
+
+        The file is created with owner-only permissions *before* any secret
+        is written, closing the world-readable window that ``set_key`` alone
+        would leave open.
+        """
         try:
+            if not self.env_path.exists():
+                fd = os.open(self.env_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                os.close(fd)
             set_key(self.env_path, key, str(value))
         except OSError as e:
             logger.error("Could not write %s: %s", self.env_path, e)
+        finally:
+            self._restrict_env_permissions()
 
     def _remove_from_env_file(self, key: str) -> None:
         """Remove ``KEY=...`` lines from the ``.env`` file."""

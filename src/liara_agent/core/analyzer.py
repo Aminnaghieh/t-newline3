@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fnmatch
 import json
 import os
 import re
@@ -12,7 +11,6 @@ from pydantic import BaseModel, Field
 
 from liara_agent.utils.constants import PLAN_CATALOG, PLATFORM_DETECTION
 from liara_agent.utils.errors import AnalysisError
-
 
 # ─── Models ───────────────────────────────────────────────────
 

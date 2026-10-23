@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
 
 import typer
 from rich.console import Console
-from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
 
@@ -31,7 +29,7 @@ def _mask_secret(val: str) -> str:
 
 @config_app.command("set-token")
 def set_token(
-    token: Optional[str] = typer.Option(None, "--token", "-t", help="توکن API لیارا"),
+    token: str | None = typer.Option(None, "--token", "-t", help="توکن API لیارا"),
 ) -> None:
     """تنظیم و اعتبارسنجی توکن API پلتفرم لیارا."""
     if not token:
@@ -68,7 +66,7 @@ def set_token(
 
 @config_app.command("set-openai-key")
 def set_openai_key(
-    key: Optional[str] = typer.Option(None, "--key", "-k", help="کلید OpenAI API"),
+    key: str | None = typer.Option(None, "--key", "-k", help="کلید OpenAI API"),
 ) -> None:
     """تنظیم کلید OpenAI جهت فعال‌سازی قابلیت‌های هوش مصنوعی (SRE Copilot)."""
     if not key:
@@ -138,7 +136,7 @@ def test_connections() -> None:
                 from openai import AsyncOpenAI
                 client = AsyncOpenAI(
                     api_key=openai_key,
-                    base_url="https://ai.liara.ir/api/6ada21b27508e6ca2f0acf7f/v1",
+                    base_url=settings.openai_base_url,
                 )
                 models = await client.models.list()
                 console.print(f"  [green]✅ متصل به OpenAI ({len(models.data)} مدل در دسترس)[/green]")

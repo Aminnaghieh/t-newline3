@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,7 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
+from tenacity.wait import wait_base
 
 from liara_agent.api import endpoints as ep
 from liara_agent.models.deploy import (
@@ -46,6 +49,7 @@ from liara_agent.utils.constants import (
     DEFAULT_RETRY_ATTEMPTS,
     DEFAULT_RETRY_BACKOFF,
     LIARA_API_BASE_URL,
+    PROJECT_NAME_PATTERN,
     RATE_LIMIT_READ_PER_MIN,
     RATE_LIMIT_WRITE_PER_MIN,
 )
@@ -65,6 +69,39 @@ _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # Marker injected into cached payloads so callers can surface "offline".
 STALE_FLAG = "__stale__"
 STALE_AGE = "__stale_age_sec__"
+
+_PROJECT_NAME_RE = re.compile(PROJECT_NAME_PATTERN)
+
+
+def validate_project_name(name: str) -> str:
+    """Validate a project name before it is interpolated into endpoint paths.
+
+    Blocks path-traversal and URL-injection payloads (``../x``, ``%2f``,
+    spaces, ``@`` …) from ever reaching the HTTP layer.
+    """
+    if not name or not _PROJECT_NAME_RE.match(name):
+        raise ValueError(
+            f"نام پروژه '{name}' نامعتبر است. نام باید ۲ تا ۶۳ کاراکتر "
+            "شامل حروف کوچک لاتین، عدد و خط تیره باشد."
+        )
+    return name
+
+
+class _WaitRetryAfterOrBackoff(wait_base):
+    """Honor the server's ``Retry-After`` hint, else exponential backoff."""
+
+    def __init__(self, multiplier: float, min_v: float, max_v: float) -> None:
+        self._exp = wait_exponential(multiplier=multiplier, min=min_v, max=max_v)
+
+    def __call__(self, retry_state: Any) -> float:
+        exc = retry_state.outcome.exception() if retry_state.outcome else None
+        retry_after = getattr(exc, "retry_after", None)
+        if retry_after is not None:
+            try:
+                return min(float(retry_after) + 0.5, 60.0)
+            except (TypeError, ValueError):  # pragma: no cover
+                pass
+        return self._exp(retry_state)
 
 
 class LiaraClient:
@@ -89,6 +126,7 @@ class LiaraClient:
 
         self._read_timestamps: list[float] = []
         self._write_timestamps: list[float] = []
+        self._rate_lock = threading.Lock()
 
     # ── Context Manager ──────────────────────────────────────
 
@@ -96,6 +134,10 @@ class LiaraClient:
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
             timeout=self._timeout,
+            # Security posture: always verify TLS, never follow redirects
+            # (a redirect must not silently re-send the Bearer token elsewhere).
+            verify=True,
+            follow_redirects=False,
             headers={
                 "Authorization": f"Bearer {self._token}",
                 "Content-Type": "application/json",
@@ -125,26 +167,27 @@ class LiaraClient:
         now = time.monotonic()
         window = 60.0
 
-        if method.upper() in _WRITE_METHODS:
-            self._write_timestamps = [
-                ts for ts in self._write_timestamps if now - ts < window
-            ]
-            if len(self._write_timestamps) >= RATE_LIMIT_WRITE_PER_MIN:
-                raise RateLimitError(
-                    retry_after=int(window - (now - self._write_timestamps[0])) + 1,
-                    endpoint=f"{method} (client-side limit)",
-                )
-            self._write_timestamps.append(now)
-        else:
-            self._read_timestamps = [
-                ts for ts in self._read_timestamps if now - ts < window
-            ]
-            if len(self._read_timestamps) >= RATE_LIMIT_READ_PER_MIN:
-                raise RateLimitError(
-                    retry_after=int(window - (now - self._read_timestamps[0])) + 1,
-                    endpoint=f"{method} (client-side limit)",
-                )
-            self._read_timestamps.append(now)
+        with self._rate_lock:
+            if method.upper() in _WRITE_METHODS:
+                self._write_timestamps = [
+                    ts for ts in self._write_timestamps if now - ts < window
+                ]
+                if len(self._write_timestamps) >= RATE_LIMIT_WRITE_PER_MIN:
+                    raise RateLimitError(
+                        retry_after=int(window - (now - self._write_timestamps[0])) + 1,
+                        endpoint=f"{method} (client-side limit)",
+                    )
+                self._write_timestamps.append(now)
+            else:
+                self._read_timestamps = [
+                    ts for ts in self._read_timestamps if now - ts < window
+                ]
+                if len(self._read_timestamps) >= RATE_LIMIT_READ_PER_MIN:
+                    raise RateLimitError(
+                        retry_after=int(window - (now - self._read_timestamps[0])) + 1,
+                        endpoint=f"{method} (client-side limit)",
+                    )
+                self._read_timestamps.append(now)
 
     # ── Cache key ────────────────────────────────────────────
 
@@ -157,7 +200,7 @@ class LiaraClient:
     @retry(
         retry=retry_if_exception_type((httpx.TransportError, RateLimitError)),
         stop=stop_after_attempt(DEFAULT_RETRY_ATTEMPTS),
-        wait=wait_exponential(multiplier=DEFAULT_RETRY_BACKOFF, min=1, max=30),
+        wait=_WaitRetryAfterOrBackoff(DEFAULT_RETRY_BACKOFF, 1, 30),
         reraise=True,
     )
     async def _request(
@@ -251,12 +294,14 @@ class LiaraClient:
             raise RateLimitError(retry_after=retry_after, endpoint=endpoint)
         if status >= 400:
             try:
-                detail = response.json().get("message", response.text)
+                detail = str(response.json().get("message", ""))
             except Exception:
-                detail = response.text
+                # Never embed the raw server body (it may echo tokens or PII);
+                # truncate to a safe snippet instead.
+                detail = (response.text or "")[:200]
             raise LiaraApiError(
                 status_code=status,
-                message=str(detail),
+                message=detail or f"HTTP {status}",
                 endpoint=endpoint,
             )
 
@@ -278,6 +323,7 @@ class LiaraClient:
         )
 
     async def get_project(self, name: str) -> ProjectDetailResponse:
+        validate_project_name(name)
         data = await self._request("GET", ep.PROJECT.format(name=name))
         return ProjectDetailResponse.model_validate(
             {k: v for k, v in data.items() if k != STALE_FLAG and k != STALE_AGE}
@@ -289,14 +335,17 @@ class LiaraClient:
         )
 
     async def delete_project(self, name: str) -> dict[str, Any]:
+        validate_project_name(name)
         return await self._request("DELETE", ep.PROJECT.format(name=name))
 
     async def restart_project(self, name: str) -> dict[str, Any]:
+        validate_project_name(name)
         return await self._request(
             "POST", ep.PROJECT_RESTART.format(name=name)
         )
 
     async def scale_project(self, name: str, scale: int) -> dict[str, Any]:
+        validate_project_name(name)
         if scale not in (0, 1):
             raise ValueError("scale must be 0 or 1")
         return await self._request(
@@ -306,6 +355,7 @@ class LiaraClient:
         )
 
     async def change_plan(self, name: str, plan_id: str) -> dict[str, Any]:
+        validate_project_name(name)
         return await self._request(
             "POST",
             ep.PROJECT_RESIZE.format(name=name),
@@ -313,6 +363,7 @@ class LiaraClient:
         )
 
     async def set_zero_downtime(self, name: str, enabled: bool) -> dict[str, Any]:
+        validate_project_name(name)
         status = "enable" if enabled else "disable"
         return await self._request(
             "POST",
@@ -326,6 +377,7 @@ class LiaraClient:
     async def upload_source(
         self, name: str, file_path: Path
     ) -> SourceUploadResponse:
+        validate_project_name(name)
         file_path = Path(file_path)
         if not file_path.exists():
             raise DeploymentError(
@@ -347,6 +399,7 @@ class LiaraClient:
     async def deploy_release(
         self, name: str, data: ReleaseRequest
     ) -> dict[str, Any]:
+        validate_project_name(name)
         return await self._request(
             "POST",
             ep.RELEASES_CREATE.format(name=name),
@@ -356,6 +409,7 @@ class LiaraClient:
     async def get_releases(
         self, name: str, page: int = 1, count: int = 10
     ) -> ReleasesResponse:
+        validate_project_name(name)
         data = await self._request(
             "GET",
             ep.RELEASES_LIST.format(name=name),
@@ -394,6 +448,7 @@ class LiaraClient:
     async def get_reports(
         self, name: str, metric: str = "cpu", period: str = "1h"
     ) -> MetricsReport:
+        validate_project_name(name)
         data = await self._request(
             "GET",
             ep.REPORTS.format(name=name),
@@ -404,6 +459,7 @@ class LiaraClient:
         )
 
     async def get_logs(self, name: str, since: int) -> LogsResponse:
+        validate_project_name(name)
         data = await self._request(
             "GET",
             ep.LOGS.format(name=name),
@@ -452,9 +508,11 @@ class LiaraClient:
     # ═══════════════════════════════════════════════════════════
 
     async def get_disks(self, name: str) -> dict[str, Any]:
+        validate_project_name(name)
         return await self._request("GET", ep.DISKS.format(name=name))
 
     async def create_disk(self, name: str, disk_name: str, size: int) -> dict[str, Any]:
+        validate_project_name(name)
         return await self._request(
             "POST",
             ep.DISKS.format(name=name),

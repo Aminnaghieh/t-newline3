@@ -2,18 +2,28 @@
 
 from enum import StrEnum
 
-
 # ─── Liara API ────────────────────────────────────────────────
 LIARA_API_BASE_URL = "https://api.liara.ir"
 LIARA_WS_BASE_URL = "wss://api.liara.ir"
 LIARA_CONSOLE_URL = "https://console.liara.ir"
 LIARA_DOCS_URL = "https://developers.liara.ir"
 
+# Default OpenAI-compatible gateway (overridable via OPENAI_BASE_URL / settings)
+DEFAULT_AI_BASE_URL = "https://ai.liara.ir/api/6ada21b27508e6ca2f0acf7f/v1"
+
+# Liara app names are DNS-label like: lowercase letters/digits, hyphens inside.
+PROJECT_NAME_PATTERN = r"^[a-z0-9][a-z0-9-]{1,62}$"
+
 # ─── Rate Limits (conservative) ──────────────────────────────
 RATE_LIMIT_READ_PER_MIN = 60
 RATE_LIMIT_WRITE_PER_MIN = 20
 DEFAULT_RETRY_ATTEMPTS = 3
 DEFAULT_RETRY_BACKOFF = 2.0  # seconds
+
+# ─── Local-file hardening ─────────────────────────────────────
+CACHE_MAX_ITEM_BYTES = 1_000_000        # never cache payloads larger than 1 MB
+CACHE_MAX_DIR_BYTES = 50_000_000        # cap the whole cache dir at ~50 MB
+CACHE_TTL_SECONDS = 7 * 24 * 3600       # cached reads expire after 7 days
 
 # ─── Polling Intervals ───────────────────────────────────────
 DEPLOY_POLL_INTERVAL = 5  # seconds

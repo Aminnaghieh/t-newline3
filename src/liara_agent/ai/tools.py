@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import json
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from liara_agent.api.client import LiaraClient
-from liara_agent.models.deploy import ReleaseRequest
-from liara_agent.models.project import ProjectCreate, ProjectUpdateEnvs, ProjectEnv
+from liara_agent.storage.audit import audit
 from liara_agent.utils.constants import RiskLevel
 from liara_agent.utils.errors import ApprovalDeniedError
-
 
 # ─── OpenAI Tool Definitions ─────────────────────────────────
 
@@ -146,7 +144,12 @@ LIARA_TOOLS: list[dict[str, Any]] = [
 
 
 class ToolExecutor:
-    """Executes OpenAI tool calls safely against the Liara Client."""
+    """Executes OpenAI tool calls safely against the Liara Client.
+
+    Security: the executor is **fail-closed** — a medium/high/critical
+    operation with no approval callback is *refused*, never silently run.
+    Every execution or denial is written to the tamper-evident audit trail.
+    """
 
     def __init__(
         self,
@@ -166,9 +169,28 @@ class ToolExecutor:
         """Execute a tool with risk evaluation and human approval check."""
         risk = self.get_tool_risk(tool_name)
 
-        # Human approval check for medium, high, and critical actions
-        if risk != RiskLevel.LOW and self.approval_callback:
+        # Human approval gate — fail-closed: without a callback, only LOW
+        # risk operations may proceed.
+        if risk != RiskLevel.LOW:
+            if self.approval_callback is None:
+                audit(
+                    action="tool.execution.blocked",
+                    target=tool_name,
+                    risk_level=risk.value,
+                    status="refused_no_approver",
+                    details={"arguments": arguments},
+                )
+                raise ApprovalDeniedError(
+                    f"{tool_name} (عملیات {risk.value} بدون مجوزگیر اجرا نمی‌شود)"
+                )
             approved = self.approval_callback(tool_name, arguments, risk)
+            audit(
+                action="tool.approval",
+                target=tool_name,
+                risk_level=risk.value,
+                status="approved" if approved else "denied",
+                details={"arguments": arguments},
+            )
             if not approved:
                 raise ApprovalDeniedError(tool_name)
 
@@ -216,6 +238,12 @@ class ToolExecutor:
         elif tool_name == "liara_delete_project":
             name = arguments["name"]
             await self.api.delete_project(name)
+            audit(
+                action="tool.liara_delete_project",
+                target=name,
+                risk_level=RiskLevel.CRITICAL.value,
+                status="success",
+            )
             return {"status": "success", "message": f"پروژه {name} با موفقیت حذف شد"}
 
         return {"error": f"Tool '{tool_name}' not implemented"}

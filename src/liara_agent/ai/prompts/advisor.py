@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 DEPLOYMENT_ADVISOR_PROMPT = """\
 You are a **deployment strategy advisor** for the **Liara PaaS** platform.
 

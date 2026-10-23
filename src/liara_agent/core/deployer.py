@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 import os
 import tarfile
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from liara_agent.api.client import LiaraClient
 from liara_agent.models.deploy import ReleaseRequest
@@ -72,8 +71,11 @@ class Deployer:
             raise DeploymentError(f"مسیر سورس '{source_path}' معتبر نیست")
 
         if output_file is None:
-            temp_dir = Path(tempfile.gettempdir())
-            output_file = temp_dir / f"liara_bundle_{int(time.time())}.tar.gz"
+            # Security: use a private temp file (mkstemp) instead of a
+            # predictable /tmp name — prevents symlink attacks and clobbering.
+            fd, tmp_name = tempfile.mkstemp(prefix="liara_bundle_", suffix=".tar.gz")
+            os.close(fd)
+            output_file = Path(tmp_name)
 
         def _filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
             name_parts = Path(tarinfo.name).parts

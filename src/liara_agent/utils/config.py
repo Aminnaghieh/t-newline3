@@ -8,7 +8,7 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from liara_agent.utils.constants import LIARA_API_BASE_URL
+from liara_agent.utils.constants import DEFAULT_AI_BASE_URL, LIARA_API_BASE_URL
 
 
 def _get_config_dir() -> Path:
@@ -43,7 +43,9 @@ class Settings(BaseSettings):
     """Application settings loaded from environment and .env file."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # Read secrets from the *private* app config dir, not the CWD, so a
+        # stray .env in an untrusted directory cannot shadow stored tokens.
+        env_file=str(CONFIG_DIR / ".env"),
         env_file_encoding="utf-8",
         env_prefix="",
         extra="ignore",
@@ -60,6 +62,10 @@ class Settings(BaseSettings):
     # OpenAI
     openai_api_key: str = Field(default="", description="OpenAI API key")
     openai_model: str = Field(default="openai/gpt-4o-mini", description="OpenAI model to use")
+    openai_base_url: str = Field(
+        default=DEFAULT_AI_BASE_URL,
+        description="OpenAI-compatible gateway base URL",
+    )
 
     # General
     log_level: str = Field(default="INFO", description="Logging level")

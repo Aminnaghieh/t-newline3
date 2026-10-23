@@ -36,9 +36,19 @@ def make_ws(**kwargs) -> LiaraWebSocket:
 def test_uri_composition():
     ws = make_ws()
     assert ws.uri.startswith(str(LIARA_WS_BASE_URL))
-    assert "token=tok123" in ws.uri
     assert "project_id=my-app" in ws.uri
     assert "cmd=/bin/bash" in ws.uri
+
+
+def test_uri_never_contains_token():
+    """Security: the bearer token must never leak into the WebSocket URL.
+
+    URLs are logged by proxies, servers and crash reporters — the token is
+    carried exclusively via the Authorization header.
+    """
+    ws = make_ws(token="super-secret-token-value")
+    assert "super-secret-token-value" not in ws.uri
+    assert "token=" not in ws.uri
 
 
 def test_empty_token_or_project_rejected():
@@ -52,7 +62,7 @@ async def test_connect_and_stream_yields_messages(monkeypatch):
     fake = FakeConnection([b"boot: line one", "plain text line", "final line"])
 
     async def fake_connect(uri, additional_headers=None):
-        assert "token=tok123" in uri
+        assert "tok123" not in uri  # token stays out of the URL
         assert additional_headers is not None and "Bearer" in additional_headers["Authorization"]
         return fake
 

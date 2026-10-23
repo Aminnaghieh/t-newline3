@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 PROJECT_ANALYSIS_PROMPT = """\
 You are an expert DevOps / SRE engineer specializing in the **Liara PaaS** platform.
 
