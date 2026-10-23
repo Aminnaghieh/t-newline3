@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from typing import Any
@@ -39,11 +40,24 @@ class Remediation(BaseModel):
     """Suggested actionable fix."""
     id: str
     title: str
-    action_type: str  # restart, scale, resize, env_fix, code_patch
+    action_type: str  # restart, scale, resize
     description: str
     risk_level: RiskLevel = RiskLevel.MEDIUM
     auto_executable: bool = True
     parameters: dict[str, Any] = Field(default_factory=dict)
+
+    def compute_hash(self) -> str:
+        """Deterministic SHA-256 of this remediation's payload.
+
+        Used by the HITL approval gate: the hash shown to the user must
+        match the hash of the action that is actually executed, so a
+        tampered or stale approval cannot be replayed.
+        """
+        payload = (
+            f"{self.id}|{self.action_type}|"
+            f"{sorted(self.parameters.items())}"
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 class Diagnosis(BaseModel):
@@ -52,6 +66,8 @@ class Diagnosis(BaseModel):
     confidence: float
     hypotheses: list[Hypothesis] = Field(default_factory=list)
     suggested_remediations: list[Remediation] = Field(default_factory=list)
+    approval_hash: str = ""
+    approval_expires_at: float = 0.0
 
 
 class FixResult(BaseModel):
@@ -63,13 +79,7 @@ class FixResult(BaseModel):
 
 
 def _normalize_ai_diagnosis(raw: dict[str, Any]) -> dict[str, Any]:
-    """Normalize the LLM's JSON output to match the ``Diagnosis`` schema.
-
-    The model may return slightly different keys (e.g. ``summary`` instead of
-    ``root_cause_summary``, or omit ``title``/``explanation``/``impact`` inside
-    hypotheses).  This function maps common variants to the canonical schema so
-    that ``Diagnosis(**normalized)`` succeeds.
-    """
+    """Normalize the LLM's JSON output to match the ``Diagnosis`` schema."""
     normalized: dict[str, Any] = {}
 
     # ── root cause summary ──
@@ -85,7 +95,6 @@ def _normalize_ai_diagnosis(raw: dict[str, Any]) -> dict[str, Any]:
     conf_raw = raw.get("confidence", raw.get("probability", 0.5))
     try:
         conf = float(conf_raw)
-        # If the model returned a percentage (e.g. 65), scale down.
         if conf > 1.0:
             conf = conf / 100.0
     except (TypeError, ValueError):
@@ -99,26 +108,6 @@ def _normalize_ai_diagnosis(raw: dict[str, Any]) -> dict[str, Any]:
         for idx, h in enumerate(raw_hyps, start=1):
             if not isinstance(h, dict):
                 continue
-            title = str(
-                h.get("title")
-                or h.get("name")
-                or h.get("root_cause_summary")
-                or h.get("summary")
-                or f"فرضیه {idx}"
-            )
-            explanation = str(
-                h.get("explanation")
-                or h.get("description")
-                or h.get("details")
-                or h.get("summary")
-                or "توضیحاتی ارائه نشده است."
-            )
-            impact = str(
-                h.get("impact")
-                or h.get("effect")
-                or h.get("consequence")
-                or "اثر نامشخص"
-            )
             prob_raw = h.get("probability", h.get("confidence", 0.5))
             try:
                 prob = float(prob_raw)
@@ -127,11 +116,28 @@ def _normalize_ai_diagnosis(raw: dict[str, Any]) -> dict[str, Any]:
             except (TypeError, ValueError):
                 prob = 0.5
             hypotheses.append({
-                "title": title,
+                "title": str(
+                    h.get("title")
+                    or h.get("name")
+                    or h.get("root_cause_summary")
+                    or h.get("summary")
+                    or f"فرضیه {idx}"
+                ),
                 "probability": max(0.0, min(1.0, prob)),
                 "category": str(h.get("category") or ErrorCategory.UNKNOWN),
-                "explanation": explanation,
-                "impact": impact,
+                "explanation": str(
+                    h.get("explanation")
+                    or h.get("description")
+                    or h.get("details")
+                    or h.get("summary")
+                    or "توضیحاتی ارائه نشده است."
+                ),
+                "impact": str(
+                    h.get("impact")
+                    or h.get("effect")
+                    or h.get("consequence")
+                    or "اثر نامشخص"
+                ),
             })
     normalized["hypotheses"] = hypotheses
 
@@ -156,6 +162,15 @@ def _normalize_ai_diagnosis(raw: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _attach_approval(diag: Diagnosis) -> Diagnosis:
+    """Attach a hash + 15-minute expiry to the first remediation."""
+    if diag.suggested_remediations:
+        primary = diag.suggested_remediations[0]
+        diag.approval_hash = primary.compute_hash()
+        diag.approval_expires_at = time.time() + 15 * 60
+    return diag
+
+
 class Debugger:
     """Collects runtime state, runs rule-based and AI-assisted RCA, and provides fixes."""
 
@@ -170,7 +185,6 @@ class Debugger:
         plan_id = ""
         has_envs = False
 
-        # 1. Project details
         try:
             proj_data = await self.api.get_project(project_name)
             p = proj_data.project
@@ -181,7 +195,6 @@ class Debugger:
         except Exception as e:
             logger.warning("Could not fetch project info: %s", e)
 
-        # 2. Logs
         logs_list: list[str] = []
         try:
             since_ts = int(time.time()) - (30 * 60)
@@ -193,7 +206,6 @@ class Debugger:
         except Exception as e:
             logger.debug("Could not fetch logs: %s", e)
 
-        # 3. Events
         events_list: list[str] = []
         try:
             ev_resp = await self.api.get_events(project_name)
@@ -220,7 +232,8 @@ class Debugger:
                 ai_result = await self.ai.troubleshoot(context.model_dump())
                 if ai_result and isinstance(ai_result, dict):
                     normalized = _normalize_ai_diagnosis(ai_result)
-                    return Diagnosis(**normalized)
+                    diag = Diagnosis(**normalized)
+                    return _attach_approval(diag)
             except Exception as e:
                 logger.warning("AI diagnosis fallback triggered: %s", e)
 
@@ -310,12 +323,13 @@ class Debugger:
                 )
             )
 
-        return Diagnosis(
+        diag = Diagnosis(
             root_cause_summary=hypotheses[0].title,
             confidence=hypotheses[0].probability,
             hypotheses=hypotheses,
             suggested_remediations=remediations,
         )
+        return _attach_approval(diag)
 
     async def execute_fix(self, project_name: str, remediation: Remediation) -> FixResult:
         """Execute the chosen remediation action."""

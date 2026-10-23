@@ -2,8 +2,9 @@
 
 Provides :class:`LiaraClient`, the single entry-point for every Liara API
 interaction used by the SRE Agent.  Supports automatic retries with
-exponential back-off, rate-limit awareness, structured error mapping, and
-full async-context-manager lifecycle.
+exponential back-off, rate-limit awareness, structured error mapping,
+offline cache fallback for read-only GET requests, and full
+async-context-manager lifecycle.
 
 Usage::
 
@@ -40,6 +41,7 @@ from liara_agent.models.project import (
     ProjectDetailResponse,
     ProjectListResponse,
 )
+from liara_agent.utils import cache as offline_cache
 from liara_agent.utils.constants import (
     DEFAULT_RETRY_ATTEMPTS,
     DEFAULT_RETRY_BACKOFF,
@@ -60,23 +62,13 @@ logger = logging.getLogger(__name__)
 # HTTP methods treated as *write* operations for rate-limit tracking.
 _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
+# Marker injected into cached payloads so callers can surface "offline".
+STALE_FLAG = "__stale__"
+STALE_AGE = "__stale_age_sec__"
+
 
 class LiaraClient:
-    """Async HTTP client for the Liara PaaS API.
-
-    Parameters
-    ----------
-    token:
-        Bearer token obtained from the Liara console.
-    base_url:
-        API base URL.  Defaults to ``https://api.liara.ir``.
-    timeout:
-        Default request timeout in seconds.
-    team_id:
-        Optional team identifier.  When set, a ``teamID`` query parameter
-        is attached to every request so that team-scoped projects are
-        visible.  Falls back to the ``LIARA_TEAM_ID`` environment variable.
-    """
+    """Async HTTP client for the Liara PaaS API."""
 
     def __init__(
         self,
@@ -93,8 +85,8 @@ class LiaraClient:
         self._timeout = timeout
         self._team_id = team_id or os.getenv("LIARA_TEAM_ID")
         self._client: httpx.AsyncClient | None = None
+        self._offline: bool = False
 
-        # Simple sliding-window rate-limit tracking.
         self._read_timestamps: list[float] = []
         self._write_timestamps: list[float] = []
 
@@ -122,12 +114,16 @@ class LiaraClient:
             await self._client.aclose()
             self._client = None
 
+    @property
+    def is_offline(self) -> bool:
+        """True once the last read was served from the offline cache."""
+        return self._offline
+
     # ── Rate Limiter ─────────────────────────────────────────
 
     def _check_rate_limit(self, method: str) -> None:
-        """Raise :class:`RateLimitError` if the local rate-limit window is full."""
         now = time.monotonic()
-        window = 60.0  # seconds
+        window = 60.0
 
         if method.upper() in _WRITE_METHODS:
             self._write_timestamps = [
@@ -150,6 +146,12 @@ class LiaraClient:
                 )
             self._read_timestamps.append(now)
 
+    # ── Cache key ────────────────────────────────────────────
+
+    def _cache_key(self, method: str, path: str) -> str:
+        team = self._team_id or "personal"
+        return f"{method.upper()}:{team}:{path}"
+
     # ── Core Request ─────────────────────────────────────────
 
     @retry(
@@ -168,30 +170,6 @@ class LiaraClient:
         files: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Send an authenticated request and return the JSON response.
-
-        Handles:
-        - Authorization header injection
-        - Team-scoped access via ``teamID`` query parameter
-        - Client-side rate-limit enforcement
-        - HTTP error → custom exception mapping
-        - Retries with exponential back-off (via *tenacity*)
-
-        Parameters
-        ----------
-        method:
-            HTTP verb (``GET``, ``POST``, …).
-        path:
-            URL path **relative** to *base_url*.
-        json:
-            JSON-serialisable request body.
-        params:
-            Query-string parameters.
-        files:
-            Multipart file data (disables JSON content-type).
-        headers:
-            Extra headers merged on top of the default set.
-        """
         if self._client is None:
             raise RuntimeError(
                 "LiaraClient is not initialised — use 'async with LiaraClient(…) as c:'"
@@ -199,7 +177,6 @@ class LiaraClient:
 
         self._check_rate_limit(method)
 
-        # Merge caller-supplied params with the teamID scope parameter.
         merged_params: dict[str, Any] = dict(params) if params else {}
         if self._team_id:
             merged_params["teamID"] = self._team_id
@@ -209,13 +186,11 @@ class LiaraClient:
             req_kwargs["params"] = merged_params
 
         if files:
-            # For multipart uploads, remove the JSON content-type.
             req_kwargs["files"] = files
             req_kwargs["headers"] = {
                 **(headers or {}),
-                "Content-Type": "",  # let httpx set multipart boundary
+                "Content-Type": "",
             }
-            # httpx ignores Content-Type="" and auto-generates the header.
             req_kwargs["headers"].pop("Content-Type", None)
         else:
             if json is not None:
@@ -224,8 +199,36 @@ class LiaraClient:
                 req_kwargs["headers"] = headers
 
         logger.debug("API → %s %s", method, path)
-        response = await self._client.request(**req_kwargs)
-        return self._handle_response(response, path)
+        cache_key = self._cache_key(method, path)
+
+        try:
+            response = await self._client.request(**req_kwargs)
+        except httpx.TransportError as exc:
+            self._offline = True
+            # Offline fallback: only for read-only requests.
+            if method.upper() == "GET":
+                cached = offline_cache.load(cache_key)
+                if cached is not None:
+                    payload, age = cached
+                    self._offline = True
+                    logger.warning(
+                        "API offline (%s); serving cached %s (age=%.0fs)",
+                        exc, path, age,
+                    )
+                    if isinstance(payload, dict):
+                        out = dict(payload)
+                    else:
+                        out = {"data": payload}
+                    out[STALE_FLAG] = True
+                    out[STALE_AGE] = age
+                    return out
+            # No cache: propagate.
+            raise
+
+        data = self._handle_response(response, path)
+        if method.upper() == "GET" and not self._offline:
+            offline_cache.save(cache_key, data)
+        return data
 
     # ── Response / Error Handling ─────────────────────────────
 
@@ -234,13 +237,11 @@ class LiaraClient:
         response: httpx.Response,
         endpoint: str,
     ) -> dict[str, Any]:
-        """Map HTTP status codes to domain exceptions and parse JSON."""
         status = response.status_code
 
         if status == 204:
             return {}
 
-        # --- error mapping ---
         if status == 401:
             raise AuthenticationError()
         if status == 404:
@@ -259,7 +260,6 @@ class LiaraClient:
                 endpoint=endpoint,
             )
 
-        # --- success ---
         if not response.text:
             return {}
         return response.json()  # type: ignore[no-any-return]
@@ -269,66 +269,34 @@ class LiaraClient:
     # ═══════════════════════════════════════════════════════════
 
     async def get_projects(self) -> ProjectListResponse:
-        """List all projects owned by the authenticated user."""
         params = {"teamID": self._team_id} if self._team_id else None
         data = await self._request("GET", ep.PROJECTS, params=params)
-        return ProjectListResponse.model_validate(data)
+        if data.get(STALE_FLAG):
+            logger.warning("projects list served from offline cache")
+        return ProjectListResponse.model_validate(
+            {k: v for k, v in data.items() if k != STALE_FLAG and k != STALE_AGE}
+        )
 
     async def get_project(self, name: str) -> ProjectDetailResponse:
-        """Get detailed information for a single project.
-
-        Parameters
-        ----------
-        name:
-            Project name (slug).
-        """
         data = await self._request("GET", ep.PROJECT.format(name=name))
-        return ProjectDetailResponse.model_validate(data)
+        return ProjectDetailResponse.model_validate(
+            {k: v for k, v in data.items() if k != STALE_FLAG and k != STALE_AGE}
+        )
 
     async def create_project(self, data: ProjectCreate) -> dict[str, Any]:
-        """Create a new Liara project.
-
-        Parameters
-        ----------
-        data:
-            Project creation payload.
-        """
         return await self._request(
             "POST", ep.PROJECTS, json=data.model_dump(exclude_none=True)
         )
 
     async def delete_project(self, name: str) -> dict[str, Any]:
-        """Permanently delete a project.
-
-        Parameters
-        ----------
-        name:
-            Project name.
-        """
         return await self._request("DELETE", ep.PROJECT.format(name=name))
 
     async def restart_project(self, name: str) -> dict[str, Any]:
-        """Restart a running project.
-
-        Parameters
-        ----------
-        name:
-            Project name.
-        """
         return await self._request(
             "POST", ep.PROJECT_RESTART.format(name=name)
         )
 
     async def scale_project(self, name: str, scale: int) -> dict[str, Any]:
-        """Scale a project on or off.
-
-        Parameters
-        ----------
-        name:
-            Project name.
-        scale:
-            ``1`` to turn on, ``0`` to turn off.
-        """
         if scale not in (0, 1):
             raise ValueError("scale must be 0 or 1")
         return await self._request(
@@ -338,33 +306,13 @@ class LiaraClient:
         )
 
     async def change_plan(self, name: str, plan_id: str) -> dict[str, Any]:
-        """Resize a project to a different plan.
-
-        Parameters
-        ----------
-        name:
-            Project name.
-        plan_id:
-            Target plan identifier (e.g. ``"medium"``).
-        """
         return await self._request(
             "POST",
             ep.PROJECT_RESIZE.format(name=name),
             json={"planID": plan_id},
         )
 
-    async def set_zero_downtime(
-        self, name: str, enabled: bool
-    ) -> dict[str, Any]:
-        """Enable or disable zero-downtime deployments.
-
-        Parameters
-        ----------
-        name:
-            Project name.
-        enabled:
-            ``True`` to enable, ``False`` to disable.
-        """
+    async def set_zero_downtime(self, name: str, enabled: bool) -> dict[str, Any]:
         status = "enable" if enabled else "disable"
         return await self._request(
             "POST",
@@ -378,20 +326,6 @@ class LiaraClient:
     async def upload_source(
         self, name: str, file_path: Path
     ) -> SourceUploadResponse:
-        """Upload a ``.tar.gz`` source archive for deployment.
-
-        Parameters
-        ----------
-        name:
-            Project name.
-        file_path:
-            Local path to the ``.tar.gz`` archive.
-
-        Raises
-        ------
-        DeploymentError
-            If the file does not exist or has the wrong extension.
-        """
         file_path = Path(file_path)
         if not file_path.exists():
             raise DeploymentError(
@@ -413,15 +347,6 @@ class LiaraClient:
     async def deploy_release(
         self, name: str, data: ReleaseRequest
     ) -> dict[str, Any]:
-        """Create a new release (deploy) from a previously uploaded source.
-
-        Parameters
-        ----------
-        name:
-            Project name.
-        data:
-            Release configuration including ``sourceID``.
-        """
         return await self._request(
             "POST",
             ep.RELEASES_CREATE.format(name=name),
@@ -431,23 +356,14 @@ class LiaraClient:
     async def get_releases(
         self, name: str, page: int = 1, count: int = 10
     ) -> ReleasesResponse:
-        """List releases (deployments) for a project, paginated.
-
-        Parameters
-        ----------
-        name:
-            Project name.
-        page:
-            Page number (1-based).
-        count:
-            Items per page.
-        """
         data = await self._request(
             "GET",
             ep.RELEASES_LIST.format(name=name),
             params={"page": page, "count": count},
         )
-        return ReleasesResponse.model_validate(data)
+        return ReleasesResponse.model_validate(
+            {k: v for k, v in data.items() if k != STALE_FLAG and k != STALE_AGE}
+        )
 
     async def get_events(
         self,
@@ -456,19 +372,6 @@ class LiaraClient:
         start: int = 0,
         end: int = 0,
     ) -> EventsResponse:
-        """Get deployment events for a project.
-
-        Parameters
-        ----------
-        name:
-            Project name.
-        search:
-            Optional event search filter.
-        start:
-            Unix timestamp – events **after** this time.
-        end:
-            Unix timestamp – events **before** this time.
-        """
         params: dict[str, Any] = {}
         if search:
             params["search"] = search
@@ -480,52 +383,35 @@ class LiaraClient:
         data = await self._request(
             "GET", ep.EVENTS.format(name=name), params=params or None
         )
-        return EventsResponse.model_validate(data)
+        return EventsResponse.model_validate(
+            {k: v for k, v in data.items() if k != STALE_FLAG and k != STALE_AGE}
+        )
 
     # ═══════════════════════════════════════════════════════════
     #  Monitoring
     # ═══════════════════════════════════════════════════════════
 
     async def get_reports(
-        self,
-        name: str,
-        metric: str = "cpu",
-        period: str = "1h",
+        self, name: str, metric: str = "cpu", period: str = "1h"
     ) -> MetricsReport:
-        """Fetch resource usage reports (CPU, memory, network).
-
-        Parameters
-        ----------
-        name:
-            Project name.
-        metric:
-            Metric type – ``cpu``, ``memory``, ``network``, ``disk``.
-        period:
-            Time window – ``1h``, ``6h``, ``24h``, ``7d``, ``30d``.
-        """
         data = await self._request(
             "GET",
             ep.REPORTS.format(name=name),
             params={"metric": metric, "period": period},
         )
-        return MetricsReport.model_validate(data)
+        return MetricsReport.model_validate(
+            {k: v for k, v in data.items() if k != STALE_FLAG and k != STALE_AGE}
+        )
 
     async def get_logs(self, name: str, since: int) -> LogsResponse:
-        """Get historical application logs.
-
-        Parameters
-        ----------
-        name:
-            Project name.
-        since:
-            Unix timestamp – return logs created after this time.
-        """
         data = await self._request(
             "GET",
             ep.LOGS.format(name=name),
             params={"since": since},
         )
-        return LogsResponse.model_validate(data)
+        return LogsResponse.model_validate(
+            {k: v for k, v in data.items() if k != STALE_FLAG and k != STALE_AGE}
+        )
 
     # ═══════════════════════════════════════════════════════════
     #  Environment Variables
@@ -534,15 +420,6 @@ class LiaraClient:
     async def update_envs(
         self, project: str, variables: list[dict[str, str]]
     ) -> dict[str, Any]:
-        """Set or update environment variables for a project.
-
-        Parameters
-        ----------
-        project:
-            Project name.
-        variables:
-            List of ``{"key": "…", "value": "…"}`` dicts.
-        """
         return await self._request(
             "POST",
             ep.UPDATE_ENVS,
@@ -554,41 +431,16 @@ class LiaraClient:
     # ═══════════════════════════════════════════════════════════
 
     async def get_domains(self, project: str) -> dict[str, Any]:
-        """List domains attached to a project.
-
-        Parameters
-        ----------
-        project:
-            Project name to filter by.
-        """
         return await self._request(
             "GET", ep.DOMAINS, params={"project": project}
         )
 
     async def create_domain(self, name: str) -> dict[str, Any]:
-        """Register a new custom domain.
-
-        Parameters
-        ----------
-        name:
-            Fully-qualified domain name (e.g. ``"example.com"``).
-        """
         return await self._request(
             "POST", ep.DOMAINS, json={"name": name}
         )
 
-    async def attach_domain(
-        self, domain_id: str, project_id: str
-    ) -> dict[str, Any]:
-        """Attach an existing domain to a project.
-
-        Parameters
-        ----------
-        domain_id:
-            Domain identifier.
-        project_id:
-            Project identifier.
-        """
+    async def attach_domain(self, domain_id: str, project_id: str) -> dict[str, Any]:
         return await self._request(
             "POST",
             ep.DOMAINS_SET_PROJECT,
@@ -600,63 +452,21 @@ class LiaraClient:
     # ═══════════════════════════════════════════════════════════
 
     async def get_disks(self, name: str) -> dict[str, Any]:
-        """List persistent disks for a project.
-
-        Parameters
-        ----------
-        name:
-            Project name.
-        """
         return await self._request("GET", ep.DISKS.format(name=name))
 
-    async def create_disk(
-        self, name: str, disk_name: str, size: int
-    ) -> dict[str, Any]:
-        """Provision a new persistent disk.
-
-        Parameters
-        ----------
-        name:
-            Project name.
-        disk_name:
-            Name for the new disk.
-        size:
-            Disk size in GiB.
-        """
+    async def create_disk(self, name: str, disk_name: str, size: int) -> dict[str, Any]:
         return await self._request(
             "POST",
             ep.DISKS.format(name=name),
             json={"name": disk_name, "size": size},
         )
 
-    async def get_disk_backups(
-        self, name: str, disk_id: str
-    ) -> dict[str, Any]:
-        """List backups for a specific disk.
-
-        Parameters
-        ----------
-        name:
-            Project name.
-        disk_id:
-            Disk identifier.
-        """
+    async def get_disk_backups(self, name: str, disk_id: str) -> dict[str, Any]:
         return await self._request(
             "GET", ep.DISK_BACKUPS.format(name=name, disk_id=disk_id)
         )
 
-    async def create_disk_backup(
-        self, name: str, disk_id: str
-    ) -> dict[str, Any]:
-        """Create a new backup for a disk.
-
-        Parameters
-        ----------
-        name:
-            Project name.
-        disk_id:
-            Disk identifier.
-        """
+    async def create_disk_backup(self, name: str, disk_id: str) -> dict[str, Any]:
         return await self._request(
             "POST", ep.DISK_BACKUPS.format(name=name, disk_id=disk_id)
         )
@@ -666,10 +476,7 @@ class LiaraClient:
     # ═══════════════════════════════════════════════════════════
 
     async def get_user(self) -> dict[str, Any]:
-        """Get the authenticated user's profile."""
         return await self._request("GET", ep.USER_ME)
 
     async def get_billing(self) -> dict[str, Any]:
-        """Get the current billing summary."""
         return await self._request("GET", ep.BILLING)
-    

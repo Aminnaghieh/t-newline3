@@ -27,7 +27,8 @@ from liara_agent.ai.tools import LIARA_TOOLS
 logger = logging.getLogger(__name__)
 
 # Schema hint appended to the RCA system prompt to force the model to emit
-# the exact keys expected by ``Diagnosis`` / ``Hypothesis``.
+# the exact keys expected by ``Diagnosis`` / ``Hypothesis`` and to restrict
+# ``action_type`` to values the executor actually supports.
 _RCA_SCHEMA_HINT = """
 
 You MUST return a single JSON object with EXACTLY this structure:
@@ -48,7 +49,7 @@ You MUST return a single JSON object with EXACTLY this structure:
     {
       "id": "<short snake_case id>",
       "title": "<short human-readable title>",
-      "action_type": "<one of: restart | resize | scale | env_fix | code_patch>",
+      "action_type": "<one of: restart | resize | scale>",
       "description": "<what the action does>",
       "risk_level": "<low | medium | high | critical>",
       "auto_executable": <true|false>,
@@ -61,6 +62,10 @@ Rules:
 - Always include at least one hypothesis.
 - ``confidence`` and every ``probability`` MUST be a float in [0, 1] (NOT a percentage).
 - Every hypothesis MUST contain title, probability, category, explanation, and impact.
+- ``action_type`` MUST be one of: restart, resize, scale. Do NOT emit env_fix, code_patch, or anything else.
+- For ``resize``, put ``{"planID": "<micro|small|medium|large>"}`` in parameters.
+- For ``scale``, put ``{"scale": 0}`` or ``{"scale": 1}`` in parameters.
+- For ``restart``, parameters MUST be an empty object ``{}``.
 - Do NOT wrap the JSON in markdown code fences.
 - Do NOT add any keys outside the schema above.
 """
@@ -127,9 +132,8 @@ class AIEngine:
     ) -> dict[str, Any]:
         """Post-process the model output so it matches ``Diagnosis``.
 
-        Adds missing keys with sensible defaults derived from ``context`` so
-        that the caller never has to fall back to heuristics just because the
-        model omitted a field.
+        Adds missing keys with sensible defaults derived from ``context`` and
+        restricts ``action_type`` to values the executor understands.
         """
         if not isinstance(data, dict):
             data = {}
@@ -205,18 +209,26 @@ class AIEngine:
         rems = data.get("suggested_remediations") or data.get("remediations") or []
         if not isinstance(rems, list):
             rems = []
+        _SUPPORTED = {"restart", "resize", "scale"}
         normalized_rems: list[dict[str, Any]] = []
         for idx, r in enumerate(rems, start=1):
             if not isinstance(r, dict):
                 continue
+            action = str(r.get("action_type") or r.get("action") or "restart").lower()
+            if action not in _SUPPORTED:
+                # Coerce unsupported actions to restart, which is always safe.
+                action = "restart"
+            params = r.get("parameters") or {}
+            if action == "restart":
+                params = {}
             normalized_rems.append({
                 "id": str(r.get("id") or f"fix_{idx}"),
                 "title": str(r.get("title") or r.get("name") or f"راهکار {idx}"),
-                "action_type": str(r.get("action_type") or r.get("action") or "restart"),
+                "action_type": action,
                 "description": str(r.get("description") or r.get("details") or ""),
                 "risk_level": str(r.get("risk_level") or "medium"),
                 "auto_executable": bool(r.get("auto_executable", True)),
-                "parameters": r.get("parameters") or {},
+                "parameters": params,
             })
         data["suggested_remediations"] = normalized_rems
 
